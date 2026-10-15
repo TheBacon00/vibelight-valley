@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Vibelight Valley installer: one portable exe that installs, updates, enables/disables and uninstalls the mod.
+    .NET Framework 4.8 ships with Windows 10/11, so the exe needs nothing else installed and stays small.
+    Release builds get their version from CI:  dotnet publish src/Installer -c Release -p:Version=1.2.3
+  -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>WinExe</OutputType>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <RootNamespace>VibelightValley.Installer</RootNamespace>
+    <AssemblyName>VibelightValley-Installer</AssemblyName>
+    <Version>0.0.0</Version>
+    <Product>Vibelight Valley Installer</Product>
+    <Copyright>MIT License</Copyright>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
+    <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+    <PathMap>$(MSBuildProjectDirectory)=Installer</PathMap>
+    <EnableSourceLink>false</EnableSourceLink>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.IO.Compression" />
+    <Reference Include="System.IO.Compression.FileSystem" />
+    <Reference Include="System.Runtime.Serialization" />
+    <Resource Include="Assets\icon.ico" />
+  </ItemGroup>
+
+</Project>

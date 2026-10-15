@@ -1,0 +1,13 @@
+* text=auto
+# Windows scripts must keep CRLF line endings (cmd.exe misparses LF-only batch files)
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.cs text eol=lf
+*.csproj text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.sha256 text eol=lf
+*.dll binary
+*.ico binary
+*.exe binary

@@ -1,0 +1,117 @@
+# Every push to main publishes a new semver release: the installer exe, the mod zip and manifest.json.
+#
+# Version: ietf-tools/semver-action reads the Conventional Commit messages since the last tag:
+#   feat: ...            -> minor bump (0.1.0 -> 0.2.0)
+#   fix:/perf:/refactor: -> patch bump (0.1.0 -> 0.1.1)
+#   "BREAKING CHANGE"    -> major bump
+#   anything else        -> patch bump (noVersionBumpBehavior: patch)
+#
+# The mod DLL cannot be compiled here (it needs interop assemblies generated from a local game install), so the
+# DLL built by tools/build.ps1 is committed in release/plugin. The first step refuses to release if the source
+# changed after that DLL was built. The installer (WPF, .NET Framework 4.8) is built here, hence a Windows runner.
+#
+# Installers find new releases through https://github.com/<repo>/releases/latest/download/manifest.json.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Check the committed DLL matches the source
+        shell: pwsh
+        run: ./tools/source-hash.ps1 -Check
+
+      # semver-action needs an existing tag to compare against, so the very first release is versioned here.
+      - name: Find the latest tag
+        id: tags
+        run: |
+          if git describe --tags --abbrev=0 >/dev/null 2>&1; then echo "exists=true" >> "$GITHUB_OUTPUT"
+          else echo "No tags yet: first release is v$FIRST_VERSION"; echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+        env:
+          FIRST_VERSION: 0.2.0
+
+      - name: Determine next version
+        id: semver
+        if: steps.tags.outputs.exists == 'true'
+        uses: ietf-tools/semver-action@v1
+        with:
+          token: ${{ github.token }}
+          branch: main
+          noVersionBumpBehavior: patch
+          noNewCommitBehavior: current
+
+      - name: Skip if this version is already released
+        id: check
+        env:
+          # Not NEXT/VERSION: semver-action also exports "next"/"nextStrict", and Windows env names ignore case.
+          SEMVER_TAG: ${{ steps.semver.outputs.next }}
+          SEMVER_VERSION: ${{ steps.semver.outputs.nextStrict }}
+          FIRST_VERSION: 0.2.0
+        run: |
+          if [ -n "$SEMVER_VERSION" ]; then RELEASE_TAG="$SEMVER_TAG"; RELEASE_VERSION="$SEMVER_VERSION"
+          else RELEASE_TAG="v$FIRST_VERSION"; RELEASE_VERSION="$FIRST_VERSION"; fi
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          if [ -z "$RELEASE_TAG" ] || git rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
+            echo "Nothing new to release ($RELEASE_TAG already exists)."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Releasing $RELEASE_TAG"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up .NET
+        if: steps.check.outputs.skip == 'false'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build release files
+        if: steps.check.outputs.skip == 'false'
+        shell: pwsh
+        run: ./tools/package.ps1 -NoBuild -Version '${{ steps.check.outputs.version }}' -Repo '${{ github.repository }}'
+
+      - name: Publish GitHub release
+        if: steps.check.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.check.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.check.outputs.version }}
+        run: |
+          # package.ps1 writes manifest URLs for tag v<version>; make sure that is the tag being created.
+          if [ "$RELEASE_TAG" != "v$RELEASE_VERSION" ]; then echo "Tag $RELEASE_TAG does not match v$RELEASE_VERSION"; exit 1; fi
+          ZIP="dist/VibelightValley-$RELEASE_VERSION.zip"
+          EXE="dist/VibelightValley-Installer.exe"
+          cat > notes.md <<EOF
+          **Install or update:** download [\`VibelightValley-Installer.exe\`](https://github.com/${GITHUB_REPOSITORY}/releases/download/$RELEASE_TAG/VibelightValley-Installer.exe) and run it. Already have the installer? Just open it; it updates itself and the mod. See the [README](https://github.com/${GITHUB_REPOSITORY}#install).
+
+          | File | SHA-256 |
+          |---|---|
+          | VibelightValley-Installer.exe | \`$(sha256sum "$EXE" | cut -d' ' -f1)\` |
+          | VibelightValley-$RELEASE_VERSION.zip | \`$(sha256sum "$ZIP" | cut -d' ' -f1)\` |
+          EOF
+          gh release create "$RELEASE_TAG" "$EXE" "$ZIP" dist/manifest.json \
+            --target "$GITHUB_SHA" \
+            --title "Vibelight Valley $RELEASE_TAG" \
+            --notes-file notes.md \
+            --generate-notes

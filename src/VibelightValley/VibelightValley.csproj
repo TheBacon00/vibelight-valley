@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>VibelightValley</AssemblyName>
+    <RootNamespace>VibelightValley</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Version>0.1.0</Version>
+    <DebugType>embedded</DebugType>
+    <!-- Reproducible output without local paths in the published DLL (stack traces show /_/...). -->
+    <Deterministic>true</Deterministic>
+    <PathMap>$(MSBuildProjectDirectory)=/_/</PathMap>
+    <EnableSourceLink>false</EnableSourceLink>
+    <EnableSourceControlManagerQueries>false</EnableSourceControlManagerQueries>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+    <!-- Game install. Override with: dotnet build -p:GameDir="..." -->
+    <GameDir Condition="'$(GameDir)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Disney Dreamlight Valley</GameDir>
+    <BepInExCore>$(GameDir)\BepInEx\core</BepInExCore>
+    <Interop>$(GameDir)\BepInEx\interop</Interop>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <Reference>
+      <Private>false</Private>
+    </Reference>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <Reference Include="$(BepInExCore)\BepInEx.Core.dll" />
+    <Reference Include="$(BepInExCore)\BepInEx.Unity.IL2CPP.dll" />
+    <Reference Include="$(BepInExCore)\BepInEx.Unity.Common.dll" />
+    <Reference Include="$(BepInExCore)\Il2CppInterop.Runtime.dll" />
+    <Reference Include="$(BepInExCore)\Il2CppInterop.Common.dll" />
+    <Reference Include="$(BepInExCore)\0Harmony.dll" />
+    <Reference Include="$(Interop)\Il2Cppmscorlib.dll" />
+    <Reference Include="$(Interop)\Il2CppSystem.dll" />
+    <Reference Include="$(Interop)\UnityEngine.dll" />
+    <Reference Include="$(Interop)\UnityEngine.CoreModule.dll" />
+    <Reference Include="$(Interop)\UnityEngine.ScreenCaptureModule.dll" />
+    <Reference Include="$(Interop)\UnityEngine.ImageConversionModule.dll" />
+    <Reference Include="$(Interop)\UnityEngine.UIModule.dll" />
+    <Reference Include="$(Interop)\UnityEngine.IMGUIModule.dll" />
+    <Reference Include="$(Interop)\UnityEngine.InputLegacyModule.dll" />
+    <Reference Include="$(Interop)\Unity.RenderPipelines.Core.Runtime.dll" />
+    <Reference Include="$(Interop)\Unity.RenderPipelines.Universal.Runtime.dll" />
+    <Reference Include="$(Interop)\Rewired_Core.dll" />
+  </ItemGroup>
+
+  <!-- UnityEngine.CoreModule (interop) also defines System.Runtime.InteropServices.UnmanagedCallersOnlyAttribute;
+       give the real one an extra alias so it can be named unambiguously as sysinterop::... -->
+  <Target Name="AliasSystemInterop" AfterTargets="ResolveAssemblyReferences">
+    <ItemGroup>
+      <ReferencePath Condition="'%(FileName)' == 'System.Runtime.InteropServices'">
+        <Aliases>global,sysinterop</Aliases>
+      </ReferencePath>
+    </ItemGroup>
+  </Target>
+
+</Project>

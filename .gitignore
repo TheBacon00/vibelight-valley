@@ -1,0 +1,19 @@
+# Local toolchain (.NET SDK, portable git/gh) and downloads
+.tools/
+
+# Build output and release packages
+build/
+dist/
+**/bin/
+**/obj/
+
+# Third-party binaries fetched by tools/fetch-deps.ps1
+lib/
+
+# Editor / OS noise
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+.DS_Store
