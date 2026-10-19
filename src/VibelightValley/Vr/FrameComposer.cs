@@ -10,14 +10,18 @@ namespace VibelightValley.Vr;
 
 /// <summary>
 /// Decides what goes into each OpenXR frame and prepares the textures for it (main thread, end of frame):
-///  - projection layer : eye renders (or the test pattern), blitted into copy-compatible submit textures
+///  - projection layer : the eye renders as they are (FastEyeSubmit: SteamVR flips them via the layer's field of
+///                       view), or the eye renders / test pattern blitted the right way up into submit textures
 ///  - HUD quad         : the game's overlay UI (HudLayer) filling the game camera's view, see-through
 ///  - screen quad      : a capture of the desktop window, for title screen / menus / F8
-/// The render thread later copies the submit textures into the swapchains.
+/// The render thread later copies these textures into the swapchains.
 /// </summary>
 public sealed class FrameComposer
 {
-    private readonly EyeTarget[] _eyeSubmit;
+    // Blit targets for the eyes: only needed for the test pattern or with FastEyeSubmit off, so created on first use
+    // (two full-resolution textures otherwise sit unused in video memory).
+    private readonly EyeTarget[] _eyeSubmit = new EyeTarget[2];
+    private int _eyeW, _eyeH;
     private readonly EyeTarget _hudSubmit;
     private readonly EyeTarget _screenSubmit;
     private RenderTexture _screenCapture;
@@ -29,7 +33,7 @@ public sealed class FrameComposer
     public FrameComposer((int w, int h) eye, (int w, int h) hud, (int w, int h) screen, long format)
     {
         _format = format;
-        _eyeSubmit = new[] { new EyeTarget("SubmitL", eye.w, eye.h, 0, format), new EyeTarget("SubmitR", eye.w, eye.h, 0, format) };
+        (_eyeW, _eyeH) = eye;
         _hudSubmit = new EyeTarget("SubmitHud", hud.w, hud.h, 0, format);
         // The desktop capture is already gamma-encoded: copy its bytes as-is.
         _screenSubmit = new EyeTarget("SubmitScreen", screen.w, screen.h, 0, format, rawBytes: true);
@@ -40,22 +44,36 @@ public sealed class FrameComposer
         f.Hud = default;
         f.Screen = default;
         f.Vignette = default;
+        f.EyeTex0 = f.EyeTex1 = IntPtr.Zero;
+        f.FlipProjectionY = false;
         if (!f.ShouldRender) return;
 
-        // Unity render textures are bottom-up; OpenXR swapchains are top-down. The flip happens in this blit.
+        // Unity render textures are bottom-up; OpenXR swapchains are top-down. Either SteamVR flips the eye renders
+        // (the layer declares a flipped field of view - no extra work), or a blit flips them into submit textures.
         bool flip = Settings.FlipEyesY.Value;
         if (testPattern && f.PosesValid)
         {
-            for (int i = 0; i < 2; i++) Blit(TestPattern.Get(i), _eyeSubmit[i], flip);
+            for (int i = 0; i < 2; i++) Blit(TestPattern.Get(i), EyeSubmit(i), flip);
+            f.EyeTex0 = EyeSubmit(0).Native;
+            f.EyeTex1 = EyeSubmit(1).Native;
             f.SubmitProjection = true;
         }
         else if (f.SubmitProjection)
         {
-            for (int i = 0; i < 2; i++) Blit(rig.Targets[i].Texture, _eyeSubmit[i], flip);
+            if (Settings.FastEyeSubmit.Value)
+            {
+                f.EyeTex0 = rig.Targets[0].Native;
+                f.EyeTex1 = rig.Targets[1].Native;
+                f.FlipProjectionY = flip;
+            }
+            else
+            {
+                for (int i = 0; i < 2; i++) Blit(rig.Targets[i].Texture, EyeSubmit(i), flip);
+                f.EyeTex0 = EyeSubmit(0).Native;
+                f.EyeTex1 = EyeSubmit(1).Native;
+            }
             UpdateVignette(ref f, rig.TurnSpeed);
         }
-        f.EyeTex0 = _eyeSubmit[0].Native;
-        f.EyeTex1 = _eyeSubmit[1].Native;
         if (!rig.HasOrigin) return;
 
         bool hudReady = hud.Active && hud.Texture != null;
@@ -114,13 +132,16 @@ public sealed class FrameComposer
         Graphics.Blit(eye, (RenderTexture)null, new Vector2(sx, sy), new Vector2((1f - sx) * 0.5f, (1f - sy) * 0.5f));
     }
 
+    private EyeTarget EyeSubmit(int i) => _eyeSubmit[i] ??= new EyeTarget(i == 0 ? "SubmitL" : "SubmitR", _eyeW, _eyeH, 0, _format);
+
     /// <summary>New eye resolution. The caller must have fenced the render thread (old textures are destroyed).</summary>
     public void ResizeEyes(int width, int height)
     {
+        (_eyeW, _eyeH) = (width, height);
         for (int i = 0; i < 2; i++)
         {
-            _eyeSubmit[i].Destroy();
-            _eyeSubmit[i] = new EyeTarget(i == 0 ? "SubmitL" : "SubmitR", width, height, 0, _format);
+            _eyeSubmit[i]?.Destroy();
+            _eyeSubmit[i] = null;
         }
     }
 
@@ -253,8 +274,8 @@ public sealed class FrameComposer
             PngDump.Save(rig.Targets[0].Texture, Path.Combine(dir, "eyeL_render.png"));
             PngDump.Save(rig.Targets[1].Texture, Path.Combine(dir, "eyeR_render.png"));
         }
-        PngDump.Save(_eyeSubmit[0].Texture, Path.Combine(dir, "eyeL_submit.png"));
-        PngDump.Save(_eyeSubmit[1].Texture, Path.Combine(dir, "eyeR_submit.png"));
+        PngDump.Save(_eyeSubmit[0]?.Texture, Path.Combine(dir, "eyeL_submit.png"));
+        PngDump.Save(_eyeSubmit[1]?.Texture, Path.Combine(dir, "eyeR_submit.png"));
         PngDump.Save(hud?.Texture, Path.Combine(dir, "hud_ui.png"));
         PngDump.Save(_hudSubmit.Texture, Path.Combine(dir, "hud_submit.png"));
         PngDump.Save(_screenCapture, Path.Combine(dir, "screen_capture.png"));
@@ -264,7 +285,7 @@ public sealed class FrameComposer
 
     public void Destroy()
     {
-        foreach (var t in _eyeSubmit) t.Destroy();
+        foreach (var t in _eyeSubmit) t?.Destroy();
         _hudSubmit.Destroy();
         _screenSubmit.Destroy();
         if (_screenCapture != null) { _screenCapture.Release(); Object.Destroy(_screenCapture); }

@@ -22,7 +22,14 @@ public sealed class VrRig
 {
     public readonly Camera[] Eyes = new Camera[2];
     public readonly EyeTarget[] Targets = new EyeTarget[2];
+    private readonly UniversalAdditionalCameraData[] _eyeData = new UniversalAdditionalCameraData[2];
     private readonly GameObject _root;
+
+    /// <summary>Internal render scale for the eyes (adaptive resolution), applied as URP's renderScale while they render.</summary>
+    public float EyeRenderScale = 1f;
+
+    /// <summary>Benchmark switches: render the eyes without shadows / without the LOD boost.</summary>
+    public bool BenchNoShadows, BenchNoLodBoost;
 
     private Camera _source;            // the game camera we follow (null = eyes off)
     private int _sourceId;
@@ -52,7 +59,7 @@ public sealed class VrRig
             var go = new GameObject(i == 0 ? "VibelightValley_EyeL" : "VibelightValley_EyeR");
             go.transform.SetParent(_root.transform, false);
             var cam = go.AddComponent<Camera>();
-            go.AddComponent<UniversalAdditionalCameraData>();
+            _eyeData[i] = go.AddComponent<UniversalAdditionalCameraData>();
             cam.enabled = false;
             cam.stereoTargetEye = StereoTargetEyeMask.None;
             cam.targetTexture = Targets[i].Texture;
@@ -208,6 +215,7 @@ public sealed class VrRig
 
     private void BoostLod()
     {
+        if (BenchNoLodBoost) return;
         float factor = Settings.EyeLodBias.Value;
         if (factor <= 0f && _source != null)
             factor = Mathf.Tan(_eyeFovY * 0.5f * Mathf.Deg2Rad) / Mathf.Tan(Mathf.Max(5f, _camFovY) * 0.5f * Mathf.Deg2Rad);
@@ -227,11 +235,40 @@ public sealed class VrRig
         _savedLodBias = -1f;
     }
 
+    // Adaptive resolution: URP's renderScale is also a pipeline-asset setting, so it too is changed only while an eye
+    // renders. URP then draws the eye smaller and upscales into the (unchanged) eye texture. Upscaling is forced to
+    // bilinear: URP's automatic choice picks nearest-neighbour for exact halves, which looks blocky in a headset.
+    private float _savedRenderScale = -1f;
+    private UpscalingFilterSelection _savedUpscaling;
+
+    private void ApplyEyeRenderScale()
+    {
+        _urp ??= UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline?.TryCast<UniversalRenderPipelineAsset>();
+        if (_urp == null) return;
+        float s = Mathf.Clamp(EyeRenderScale, 0.1f, 1f);
+        if (Mathf.Abs(_urp.renderScale - s) < 0.001f) return;
+        _savedRenderScale = _urp.renderScale;
+        _savedUpscaling = _urp.upscalingFilter;
+        _urp.renderScale = s;
+        if (s < 1f) _urp.upscalingFilter = UpscalingFilterSelection.Linear;
+    }
+
+    private void RestoreRenderScale()
+    {
+        if (_savedRenderScale < 0f || _urp == null) return;
+        _urp.renderScale = _savedRenderScale;
+        _urp.upscalingFilter = _savedUpscaling;
+        _savedRenderScale = -1f;
+    }
+
     private void OnBeginCamera(Camera cam)
     {
-        if (!IsEyeId(cam.GetInstanceID())) return;
+        int id = cam.GetInstanceID();
+        if (!IsEyeId(id)) return;
         LimitEyeShadows();
+        ApplyEyeRenderScale();
         if (_savedLodBias < 0f) BoostLod();
+        if (BenchNoShadows) _eyeData[id == _eyeIds[0] ? 0 : 1].renderShadows = false; // SyncFrom restores it (ForceSync)
         string raw = Settings.EyeDisabledFeatures.Value ?? "";
         if (raw != _disabledRaw)
         {
@@ -249,6 +286,7 @@ public sealed class VrRig
         if (cam != null && !IsEyeId(cam.GetInstanceID())) return;
         _eyeFeatures.Restore();
         RestoreShadows();
+        RestoreRenderScale();
         RestoreLod();
     }
 
@@ -259,6 +297,22 @@ public sealed class VrRig
         _diagFeature = _diagFeature + 1 >= all.Count ? -1 : _diagFeature + 1;
         return _diagFeature < 0 ? "all effects on" : $"'{all[_diagFeature].name}' OFF ({_diagFeature + 1}/{all.Count})";
     }
+
+    /// <summary>Benchmark: switch exactly one render effect off in the headset (-1 = none).</summary>
+    public void SetDiagnosticFeature(int index) => _diagFeature = index;
+
+    /// <summary>The game's render effects that are switched on, with their index for <see cref="SetDiagnosticFeature"/>.</summary>
+    public List<(int index, string name)> ActiveFeatures()
+    {
+        var result = new List<(int, string)>();
+        var all = _eyeFeatures.All;
+        for (int i = 0; i < all.Count; i++)
+            if (all[i] != null && all[i].isActive) result.Add((i, all[i].name));
+        return result;
+    }
+
+    /// <summary>Re-copy the game camera's settings onto the eyes on the next Prepare (undoes benchmark changes).</summary>
+    public void ForceSync() => _nextSync = 0;
 
     // ------------------------------------------------------------------ per frame (Update)
 
@@ -338,6 +392,8 @@ public sealed class VrRig
     /// <summary>Copies the game camera's settings (culling, clear, URP data) onto both eye cameras.</summary>
     private void SyncFrom(Camera main)
     {
+        // The pipeline asset changes with the game's quality level; pick up the current one.
+        _urp = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline?.TryCast<UniversalRenderPipelineAsset>();
         var src = main.GetComponent<UniversalAdditionalCameraData>();
         for (int i = 0; i < 2; i++)
         {
@@ -554,6 +610,7 @@ public sealed class VrRig
         PipelineMonitor.EndContext -= OnEndContext;
         _eyeFeatures.Restore();
         RestoreShadows();
+        RestoreRenderScale();
         RestoreLod();
         RestoreGameCamera();
         foreach (var t in Targets) t?.Destroy();

@@ -44,6 +44,9 @@ public sealed class HudLayer
     public RenderTexture Texture { get; private set; }
     public bool Active { get; private set; }
 
+    /// <summary>Longest canvas scan since the controller last reset it (ms) - it runs every second, so a slow one is a hitch.</summary>
+    public double ScanMsMax;
+
     public HudLayer()
     {
         PipelineMonitor.BeginCamera += OnBeginCamera;
@@ -93,7 +96,9 @@ public sealed class HudLayer
             if (Time.realtimeSinceStartup >= _nextScan)
             {
                 _nextScan = Time.realtimeSinceStartup + RescanSeconds;
+                long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 Scan();
+                ScanMsMax = Math.Max(ScanMsMax, (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
             }
         }
         catch (Exception ex) { Log.Limited("hudupdate", 10, $"HUD update failed: {ex}", 'E'); }
@@ -155,7 +160,8 @@ public sealed class HudLayer
 
     private void Scan()
     {
-        foreach (var o in Object.FindObjectsOfType(Il2CppType.Of<Canvas>()))
+        // Unsorted: FindObjectsOfType also sorts the result by instance id, which is wasted work every second.
+        foreach (var o in Object.FindObjectsByType(Il2CppType.Of<Canvas>(), FindObjectsSortMode.None))
         {
             var c = o.TryCast<Canvas>();
             if (c == null || !c.isRootCanvas || c.renderMode != RenderMode.ScreenSpaceOverlay) continue;

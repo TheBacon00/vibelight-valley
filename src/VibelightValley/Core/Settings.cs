@@ -60,6 +60,9 @@ public static class Settings
     public static ConfigEntry<bool> SymmetricEyes;
     public static ConfigEntry<bool> EyeShadows;
     public static ConfigEntry<float> EyeDrawDistance;
+    public static ConfigEntry<bool> AdaptiveResolution;
+    public static ConfigEntry<float> AdaptiveMinScale;
+    public static ConfigEntry<bool> FastEyeSubmit;
 
     // Comfort
     public static ConfigEntry<bool> FollowPitch;
@@ -138,6 +141,15 @@ public static class Settings
             "FilmEffectRenderFeature, PainterlyEffectRenderFeature. Use F3 in game to try them one at a time (the log says which is off).");
         DisableVSync = cfg.Bind("Rendering", "DisableVSync", true,
             "Turn off desktop VSync while VR runs (the headset paces the game). Strongly recommended.");
+        AdaptiveResolution = cfg.Bind("Rendering", "AdaptiveResolution", true,
+            "Lower the eyes' internal render resolution automatically while the GPU can't keep up with the headset, and raise it " +
+            "again when it can. RenderScale is then the sharpest it gets. Hotkey F2 switches it on/off; the log's PERF lines show the scale.");
+        AdaptiveMinScale = cfg.Bind("Rendering", "AdaptiveMinScale", 0.6f,
+            new ConfigDescription("Lowest internal resolution adaptive resolution may use, as a fraction of the RenderScale resolution (per axis).",
+                new AcceptableValueRange<float>(0.3f, 1f)));
+        FastEyeSubmit = cfg.Bind("Rendering", "FastEyeSubmit", true,
+            "Hand the eye images to SteamVR as rendered and let SteamVR turn them the right way up (an OpenXR feature), instead of " +
+            "an extra full-screen copy per eye. Hotkey Ctrl+F2. Switch it off if the world appears upside down.");
 
         FollowPitch = cfg.Bind("Comfort", "FollowPitch", false,
             "Also tilt the view up/down with the game camera. False (recommended) keeps the horizon level; look down at your character instead.");

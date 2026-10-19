@@ -22,7 +22,7 @@ public static class CanvasMonitor
         _next = Time.realtimeSinceStartup + 10f; // FindObjectsOfType is not free in busy scenes
         try
         {
-            var arr = Object.FindObjectsOfType(Il2CppType.Of<Canvas>());
+            var arr = Object.FindObjectsByType(Il2CppType.Of<Canvas>(), FindObjectsSortMode.None);
             var names = new List<string>();
             foreach (var o in arr)
             {

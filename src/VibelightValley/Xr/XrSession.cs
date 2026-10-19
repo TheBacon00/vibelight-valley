@@ -21,6 +21,7 @@ public struct FrameRecord
     // Layers to submit
     public bool SubmitProjection;
     public IntPtr EyeTex0, EyeTex1;    // native D3D11 textures, copy-compatible with the eye swapchains
+    public bool FlipProjectionY;       // eye textures are bottom-up (Unity): submit a flipped FOV so the compositor flips them
     public QuadLayer Vignette;         // head-locked darkening of the view edges while turning (VIEW space)
     public QuadLayer Hud;              // see-through game UI (alpha blended)
     public QuadLayer Screen;           // opaque virtual screen
@@ -385,8 +386,8 @@ public sealed unsafe class XrSession : IDisposable
             if (f.ShouldRender && f.SubmitProjection && f.PosesValid
                 && Eyes[0].CopyFrom(context, f.EyeTex0) && Eyes[1].CopyFrom(context, f.EyeTex1))
             {
-                views[0] = ProjectionView(f.View0, Eyes[0]);
-                views[1] = ProjectionView(f.View1, Eyes[1]);
+                views[0] = ProjectionView(f.View0, Eyes[0], f.FlipProjectionY);
+                views[1] = ProjectionView(f.View1, Eyes[1], f.FlipProjectionY);
                 proj = new XrCompositionLayerProjection { Type = XrStructureType.CompositionLayerProjection, Space = LocalSpace, ViewCount = 2, Views = views };
                 layers[layerCount++] = &proj;
                 ProjectionSubmits++;
@@ -446,13 +447,22 @@ public sealed unsafe class XrSession : IDisposable
         return true;
     }
 
-    private static XrCompositionLayerProjectionView ProjectionView(in XrView v, XrSwapchain chain) => new()
+    /// <param name="flipY">
+    /// The image is stored bottom-up. The OpenXR spec (XrFovf): when angleDown is greater than angleUp, the compositor
+    /// must flip the view vertically - so swapping the two angles flips it at no cost instead of an extra copy.
+    /// </param>
+    private static XrCompositionLayerProjectionView ProjectionView(in XrView v, XrSwapchain chain, bool flipY)
     {
-        Type = XrStructureType.CompositionLayerProjectionView,
-        Pose = v.Pose,
-        Fov = v.Fov,
-        SubImage = FullImage(chain),
-    };
+        var fov = v.Fov;
+        if (flipY) (fov.AngleUp, fov.AngleDown) = (fov.AngleDown, fov.AngleUp);
+        return new XrCompositionLayerProjectionView
+        {
+            Type = XrStructureType.CompositionLayerProjectionView,
+            Pose = v.Pose,
+            Fov = fov,
+            SubImage = FullImage(chain),
+        };
+    }
 
     private static XrSwapchainSubImage FullImage(XrSwapchain chain) => new()
     {

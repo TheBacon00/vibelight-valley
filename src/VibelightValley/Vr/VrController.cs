@@ -44,7 +44,9 @@ public sealed class VrController
     private int _consecutiveErrors;
     private float _statsAt;
     private long _lastWaits;
-    private int _savedVSync = -1;
+    private int _savedVSync = -1, _savedFrameRate = -1;
+    private readonly AdaptiveResolution _ares = new();
+    private Benchmark _bench;
 
     // User-toggled state
     private bool _vrEnabled = true;
@@ -61,7 +63,10 @@ public sealed class VrController
         _testPattern = testPattern;
         _hotkeys = new (Hotkey, Action)[]
         {
-            (new Hotkey("F3", 0x72), () => Log.Info($"Hotkey F3: eye render effects: {_rig.CycleDiagnosticFeature()}")),
+            (new Hotkey("F2", Hotkey.VK.F2), () => Toggle(Settings.AdaptiveResolution)),
+            (new Hotkey("Ctrl+F2", Hotkey.VK.F2, ctrl: true), () => Toggle(Settings.FastEyeSubmit)),
+            (new Hotkey("F3", Hotkey.VK.F3), () => Log.Info($"Hotkey F3: eye render effects: {_rig.CycleDiagnosticFeature()}")),
+            (new Hotkey("Ctrl+F3", Hotkey.VK.F3, ctrl: true), ToggleBenchmark),
             (new Hotkey("F4", 0x73), ToggleHud),
             (new Hotkey("F5", Hotkey.VK.F5), Recenter),
             (new Hotkey("Num5", 0x65), Recenter),
@@ -85,7 +90,8 @@ public sealed class VrController
         };
         PipelineMonitor.BeginContext += OnBeginContext;
         RenderThread.Handler = OnRenderThread;
-        Log.Info($"VrController created (testPattern={testPattern}). Keys: F4 HUD, F5/Num5 recenter, F6/F7 flip eyes/screen, F8 screen, " +
+        Log.Info($"VrController created (testPattern={testPattern}). Keys: F2 adaptive resolution, Ctrl+F2 fast eye submit, " +
+                 "F3 effects one by one, Ctrl+F3 benchmark, F4 HUD, F5/Num5 recenter, F6/F7 flip eyes/screen, F8 screen, " +
                  "F10 PNG dump, F11 VR on/off, F12 test pattern, Num8/2 fwd/back, Num9/3 up/down, Num+/- scale; both sticks = HUD");
     }
 
@@ -229,12 +235,15 @@ public sealed class VrController
             {
                 if (_savedVSync < 0) _savedVSync = QualitySettings.vSyncCount;
                 QualitySettings.vSyncCount = 0;
+                if (Application.targetFrameRate > 0) _savedFrameRate = Application.targetFrameRate;
                 Application.targetFrameRate = -1;
             }
             else if (!vrRunning && _savedVSync >= 0)
             {
                 QualitySettings.vSyncCount = _savedVSync;
                 _savedVSync = -1;
+                if (_savedFrameRate > 0) Application.targetFrameRate = _savedFrameRate;
+                _savedFrameRate = -1;
             }
             if (vrRunning && UnityEngine.Screen.fullScreenMode == FullScreenMode.ExclusiveFullScreen)
             {
@@ -244,6 +253,33 @@ public sealed class VrController
             Application.runInBackground = true;
         }
         catch (Exception ex) { Log.Warn($"ApplyGameSettings: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// The game can re-apply its own VSync or frame cap later (e.g. when it loads its settings). Either one makes the
+    /// desktop monitor (165 Hz here) pace the game alongside the headset, which costs time and causes stutter.
+    /// </summary>
+    private void EnforceNoVSync()
+    {
+        if (!Settings.DisableVSync.Value || Time.frameCount % 30 != 0) return;
+        try
+        {
+            int v = QualitySettings.vSyncCount;
+            if (v != 0)
+            {
+                _savedVSync = v;   // what the game wants back when VR stops
+                QualitySettings.vSyncCount = 0;
+                Log.Limited("vsync", 5, $"The game switched VSync on again (vSyncCount={v}) - off while VR runs; the headset paces the game", 'I');
+            }
+            int cap = Application.targetFrameRate;
+            if (cap > 0)
+            {
+                _savedFrameRate = cap;
+                Application.targetFrameRate = -1;
+                Log.Limited("fpscap", 5, $"The game set a frame-rate cap ({cap} fps) - removed while VR runs", 'I');
+            }
+        }
+        catch (Exception ex) { Log.Limited("vsyncguard", 3, $"VSync guard: {ex.Message}", 'W'); }
     }
 
     private void RunningUpdate()
@@ -265,6 +301,10 @@ public sealed class VrController
         bool eyesWanted = _vrEnabled && !_testPattern && _xr.Running
                           && _xr.State is XrSessionState.Synchronized or XrSessionState.Visible or XrSessionState.Focused;
         _rig.Prepare(eyesWanted);
+        EnforceNoVSync();
+        if (_bench != null && !_bench.Update(_rig.Active)) _bench = null;
+        _ares.Update(_rig.Active, _xr.LastPredictedPeriod / 1e6f, FrameProfiler.LastGpuMs, FrameProfiler.LastCpuMs);
+        _rig.EyeRenderScale = _ares.Scale;
         // Overlay UI always goes through the UI camera, except in the world with the HUD switched off: the desktop
         // capture used for menus/title does not contain overlay UI (e.g. the menu tab bar).
         _hud.Update(_xr.Running && (_hudEnabled || !_rig.Active));
@@ -375,10 +415,34 @@ public sealed class VrController
         Log.Info($"HUD layer {(_hudEnabled ? "ON" : "OFF")}");
     }
 
+    private void SetHud(bool on)
+    {
+        if (on != _hudEnabled) ToggleHud();
+    }
+
     private void Recenter()
     {
         _wantRecenter = true;
         Log.Info("Hotkey: recenter");
+    }
+
+    /// <summary>Ctrl+F3: start the benchmark, or cancel a running one.</summary>
+    private void ToggleBenchmark()
+    {
+        if (_bench != null)
+        {
+            _bench.Abort("cancelled with Ctrl+F3");
+            _bench = null;
+            return;
+        }
+        if (!_rig.Active)
+        {
+            Log.Warn("BENCH: start it while the world shows in the headset (not in a menu or on a loading screen)");
+            return;
+        }
+        float hz = _xr.LastPredictedPeriod > 0 ? 1e9f / _xr.LastPredictedPeriod : 0f;
+        _bench = new Benchmark(_rig, _ares, _xr, _hudEnabled, SetHud,
+            $"eyes {_eye.w}x{_eye.h}, headset {hz:F0} Hz = {(hz > 0 ? 1000f / hz : 0):F1} ms per frame, fastSubmit={Settings.FastEyeSubmit.Value}");
     }
 
     private static void Toggle(ConfigEntry<bool> e)
@@ -416,7 +480,10 @@ public sealed class VrController
                  $"scale={Settings.WorldScale.Value} anchor F/U={Settings.AnchorForward.Value}/{Settings.AnchorUp.Value}");
         Log.Info($"RIG {_rig.DebugLine()} turn={_rig.TurnSpeed:F0}deg/s vignettePeak={_composer.PeakVignette:F2} follow={Settings.Follow.Value}");
         _composer.PeakVignette = 0;
-        Log.Info(FrameProfiler.Summary() + $" eye={_eye.w}x{_eye.h} shadows={Settings.EyeShadows.Value} drawDist={Settings.EyeDrawDistance.Value}");
+        Log.Info(FrameProfiler.Summary() + $" eye={_eye.w}x{_eye.h} {_ares.Summary()} fastSubmit={Settings.FastEyeSubmit.Value} " +
+                 $"shadows={Settings.EyeShadows.Value} drawDist={Settings.EyeDrawDistance.Value} vsync={QualitySettings.vSyncCount} " +
+                 $"hudScanMax={_hud.ScanMsMax:F1}ms");
+        _hud.ScanMsMax = 0;
         x.WaitMsMax = 0;
         GfxDevice.CheckRemoved("vrstats");
     }
@@ -450,6 +517,8 @@ public sealed class VrController
         try
         {
             Log.Info("VR teardown");
+            _bench?.Abort("VR stopped");
+            _bench = null;
             _hud?.Destroy();          // restores the game's canvases first
             _xr?.Dispose();           // fences the render thread before destroying swapchains
             _rig?.Destroy();

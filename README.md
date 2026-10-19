@@ -31,6 +31,7 @@ your viewpoint hovers behind your character like the normal game camera does.
 - **Virtual screen** for the title screen, loading screens and full-screen menus.
 - **Comfort and performance:**
   - Requests a fixed refresh rate (90 Hz by default), so the game frame rate matches the headset.
+  - Adaptive resolution: busy scenes render at a lower internal resolution instead of dropping frames.
   - Recenters automatically when you put the headset on.
 - **Safe and debuggable:**
   - If VR fails, the game keeps running flat and the log says why.
@@ -73,9 +74,12 @@ old copy and keeps your settings.
 | Num9 / Num3 | Viewpoint up / down |
 | Num+ / Num- | World scale |
 | PageUp / PageDown | Render resolution (`RenderScale` ±0.1, applies immediately) |
+| **F2** | Adaptive resolution on/off |
 | Num7 / Num1 | HUD up / down |
 | F6 / F7 | Flip eye images / virtual screen (only if something is upside down) |
+| Ctrl+F2 | Fast eye submit on/off (switch off if the world is upside down) |
 | F3 | Diagnostics: switch the game's render effects off in the headset one at a time |
+| Ctrl+F3 | Diagnostics: performance benchmark (see [Performance](#performance)) |
 | F9 / F10 / F12 | Diagnostics: scene dump / PNG dump / test pattern |
 
 Keyboard keys need the game window to be focused.
@@ -87,18 +91,39 @@ the first start, and every entry is documented in the file. The most useful ones
 
 | Section | Setting | Default | |
 |---|---|---|---|
-| Rendering | `RenderScale` | 1.0 | Multiplier on SteamVR's recommended per-eye resolution; lower it (e.g. 0.8) if the frame rate dips. Also check SteamVR's *per-application* resolution for the game, which overrides the global slider |
+| Rendering | `RenderScale` | 1.0 | Multiplier on SteamVR's recommended per-eye resolution: the sharpest the eyes get. Also check SteamVR's *per-application* resolution for the game, which overrides the global slider |
+| Rendering | `AdaptiveResolution` | true | Lowers the eyes' internal resolution while the GPU can't keep up, and raises it again when it can |
+| Rendering | `AdaptiveMinScale` | 0.6 | The lowest adaptive resolution may go, as a fraction of `RenderScale` |
+| Rendering | `FastEyeSubmit` | true | SteamVR turns the eye images the right way up, instead of an extra full-screen copy per eye |
 | Rendering | `RefreshRate` | 90 | Headset refresh rate to request; 0 = leave SteamVR's setting |
 | Rendering | `DesktopView` | Mirror | Desktop window while in VR: `Mirror` (left eye + UI) or `Minimal` (UI only) skip the game's own world render; `Full` = normal view (slower) |
 | Rendering | `EyeShadowDistance` | 40 | Shadow distance in the headset (game: 80); shorter = faster in busy scenes |
 | Rendering | `EyeShadows` | true | Shadows in the headset (each eye renders its own; `false` helps a lot in busy scenes) |
 | Rendering | `EyeDrawDistance` | 0 | Far clip for the eyes in metres (0 = game default); lower = faster |
 | Comfort | `FollowMode` | Character | `Character` = fixed spot behind your character; `GameCamera` = ride the game camera |
-| Comfort | `FollowDistance` / `FollowHeight` | 6 / 3.5 | Character mode viewpoint |
+| Comfort | `FollowDistance` / `FollowHeight` | 6 / 3 | Character mode viewpoint |
 | Comfort | `TurnSmoothing` | 0.5 | Seconds to follow camera turns (0 = instant) |
 | Comfort | `Vignette` | 0.7 | Edge darkening while turning (0 = off) |
 | HUD | `Enabled` | true | Show the game UI in VR |
 | HUD | `Placement` | View | `View` = stays in front of you; `GameCamera` = exactly in the game camera's view (icons line up, but it swings with the camera) |
+
+## Performance
+
+VR has to deliver a new frame for every headset refresh (8.3 ms at 120 Hz, 11.1 ms at 90 Hz), and the game renders
+the world twice per frame, once per eye.
+- **Adaptive resolution** (on by default) keeps the GPU inside that budget. When a scene gets busy, the eyes render
+  at a lower internal resolution and are scaled up. When there's headroom again, the resolution climbs back to
+  `RenderScale`. So set `RenderScale` (PageUp/PageDown) to the sharpness you want and let adaptive resolution handle
+  busy scenes. F2 switches it off for a comparison.
+- **Refresh rate:** the game's own logic needs several milliseconds per frame. If the frame rate stays below 120 even
+  at a low resolution, set the headset to 90 Hz in SteamVR (*Settings → Video*). The mod can't change it on headsets
+  that only offer one rate to OpenXR.
+- **Benchmark:** stand still facing a busy spot and press **Ctrl+F3**. For about 40 seconds the mod switches one thing
+  off at a time and measures the difference: lower resolution, shadows, the LOD boost, each of the game's render
+  effects, and the HUD. The results go to the log as a `BENCH results` table, with the biggest savings summarised in
+  a `BENCH done` line.
+- **The log's `PERF` lines** (every 5 s) show where each frame's time goes: `logic` (the game), `render(cpu)`,
+  `gpu`, and `scale`, the current adaptive resolution.
 
 ## Updating, turning it off, uninstalling
 
