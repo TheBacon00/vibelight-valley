@@ -67,7 +67,11 @@ public static class FrameProfiler
     public static void ComposeBegin() => _composeStart = Stopwatch.GetTimestamp();
 
     /// <summary>End of our end-of-frame work: closes the frame.</summary>
-    public static void FrameEnd()
+    /// <param name="sampleUnityTimings">
+    /// Also read Unity's GPU / thread timings for <see cref="LastGpuMs"/> and <see cref="LastCpuMs"/>. Capturing them makes
+    /// Unity time every frame on the GPU, so it is asked for only while VR runs.
+    /// </param>
+    public static void FrameEnd(bool sampleUnityTimings)
     {
         _frameEnd = Stopwatch.GetTimestamp();
         if (_composeStart != 0) _compose.Add((_frameEnd - _composeStart) * TickMs);
@@ -77,7 +81,7 @@ public static class FrameProfiler
         // Unity's timings are for an older frame, so subtract a smoothed xrWaitFrame time rather than this frame's.
         _waitEma += (_frameWait - _waitEma) * 0.2;
         _frameWait = 0;
-        SampleUnityTimings();
+        if (sampleUnityTimings) SampleUnityTimings();
     }
 
     private static void SampleUnityTimings()
@@ -115,8 +119,14 @@ public static class FrameProfiler
         s += _timingState == 1
             ? $" gpu={F(_gpu, _gpuFrames)} renderThread={F(_renderThread, _frames)} cpuBusy={F(_cpuBusy, _frames)} presentWait={F(_presentWait, _frames)}"
             : " gpu=n/a (FrameTimingManager disabled in this build)";
+        Reset();
+        return s;
+    }
+
+    /// <summary>Forget what was collected so far (VR starts: the flat frames before it are not part of its numbers).</summary>
+    public static void Reset()
+    {
         _logic = _render = _wait = _compose = _gpu = _renderThread = _cpuBusy = _presentWait = default;
         _frames = _gpuFrames = 0;
-        return s;
     }
 }

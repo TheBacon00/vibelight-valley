@@ -59,6 +59,8 @@ public static class Settings
     public static ConfigEntry<DesktopView> Desktop;
     public static ConfigEntry<bool> SymmetricEyes;
     public static ConfigEntry<bool> EyeShadows;
+    public static ConfigEntry<int> EyeShadowCascades;
+    public static ConfigEntry<bool> DesktopCameraEffects;
     public static ConfigEntry<float> EyeDrawDistance;
     public static ConfigEntry<bool> AdaptiveResolution;
     public static ConfigEntry<float> AdaptiveMinScale;
@@ -104,7 +106,8 @@ public static class Settings
         Mode = cfg.Bind("General", "Mode", VrMode.Stereo,
             "Stereo = play in VR. TestPattern = test image per eye (orientation/colour check). Diagnostics = log only, no headset output.");
         ConnectRetrySeconds = cfg.Bind("General", "ConnectRetrySeconds", 10f,
-            "If the headset/SteamVR is not available, retry connecting every N seconds.");
+            "If the headset is not available, try again after N seconds, then after twice as long each time (at most every 5 minutes), " +
+            "so that a game played flat is left alone. While SteamVR is running it is every N seconds, and F5 tries right away.");
 
         RenderScale = cfg.Bind("Rendering", "RenderScale", 1.0f,
             new ConfigDescription("Multiplier on SteamVR's recommended per-eye resolution. PageUp / PageDown change it live in steps of 0.1.",
@@ -130,6 +133,14 @@ public static class Settings
         EyeShadowDistance = cfg.Bind("Rendering", "EyeShadowDistance", 40f,
             "Shadow distance for the eyes in game metres (the game uses 80; 0 = same as the game). Each eye renders its own " +
             "shadow maps, so a shorter distance saves a lot of CPU and GPU time in busy scenes.");
+        EyeShadowCascades = cfg.Bind("Rendering", "EyeShadowCascades", 0,
+            new ConfigDescription("Shadow cascades for the eyes (0 = as many as the game uses, normally 4). Every cascade is one more pass " +
+                                  "over the shadow-casting objects, per eye; 2 saves CPU and GPU time and makes nearby shadows a little " +
+                                  "softer. The Ctrl+F3 benchmark measures what 2 would save.", new AcceptableValueRange<int>(0, 4)));
+        DesktopCameraEffects = cfg.Bind("Rendering", "DesktopCameraEffects", false,
+            "With DesktopView Mirror or Minimal the game camera's own picture is never shown, so by default the game's render " +
+            "effects (weather, grass, film and painterly passes) are skipped for it as well. Set true if something in the headset " +
+            "stops updating, such as clouds or grass standing still.");
         EyeLodBias = cfg.Bind("Rendering", "EyeLodBias", 0f,
             "Level-of-detail multiplier for the eyes. Objects switch detail / pop in based on their size on screen, and the eyes' " +
             "wide field of view makes everything look smaller than in the 40 degree game camera. 0 = automatic (matches the game's " +

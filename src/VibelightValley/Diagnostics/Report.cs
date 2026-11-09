@@ -87,7 +87,8 @@ public static class Report
         return sb.ToString();
     }
 
-    public static string Cameras(bool includeInactive)
+    /// <summary>Every camera, including disabled and inactive ones: around a thousand lines in this game, so only for F9.</summary>
+    public static string Cameras()
     {
         var sb = new StringBuilder();
         Section(sb, "scenes", () =>
@@ -106,10 +107,8 @@ public static class Report
         });
         Section(sb, "cameras", () =>
         {
-            var arr = includeInactive
-                ? Resources.FindObjectsOfTypeAll(Il2CppType.Of<Camera>())
-                : Object.FindObjectsOfType(Il2CppType.Of<Camera>());
-            sb.AppendLine($"Cameras found: {arr.Length} (includeInactive={includeInactive})");
+            var arr = Resources.FindObjectsOfTypeAll(Il2CppType.Of<Camera>());
+            sb.AppendLine($"Cameras found: {arr.Length}");
             foreach (var o in arr)
             {
                 var c = o.TryCast<Camera>();
@@ -210,7 +209,7 @@ public static class Report
         var sb = new StringBuilder();
         Section(sb, "canvases", () =>
         {
-            var arr = Object.FindObjectsOfType(Il2CppType.Of<Canvas>());
+            var arr = Object.FindObjectsByType(Il2CppType.Of<Canvas>(), FindObjectsSortMode.None);
             sb.AppendLine($"Active canvases: {arr.Length}");
             foreach (var o in arr)
             {
@@ -228,7 +227,7 @@ public static class Report
         var sb = new StringBuilder();
         Section(sb, "volumes", () =>
         {
-            var arr = Object.FindObjectsOfType(Il2CppType.Of<Volume>());
+            var arr = Object.FindObjectsByType(Il2CppType.Of<Volume>(), FindObjectsSortMode.None);
             sb.AppendLine($"Active volumes: {arr.Length}");
             foreach (var o in arr)
             {

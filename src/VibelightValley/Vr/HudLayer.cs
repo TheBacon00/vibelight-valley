@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using VibelightValley.Core;
 using VibelightValley.Diagnostics;
 using Il2CppInterop.Runtime;
@@ -38,6 +39,7 @@ public sealed class HudLayer
     private readonly Dictionary<int, Converted> _converted = new();
     private GameObject _go;
     private Camera _cam;
+    private int _camId;                // its instance id (0 until created)
     private int _uiLayer = -1;
     private float _nextScan;
 
@@ -61,18 +63,19 @@ public sealed class HudLayer
     private readonly FeatureSuspension _features = new();
     private bool _featuresLogged;
 
-    private void OnBeginCamera(Camera cam)
+    private void OnBeginCamera(Camera cam, int id)
     {
-        if (_cam == null || cam != _cam) return;
-        _features.Suspend(_ => true);
+        if (id != _camId) return;
+        _features.Suspend();
         if (_featuresLogged) return;
         _featuresLogged = true;
-        Log.Info($"HUD: suspending {_features.Suspended.Count} renderer features while the UI camera renders: {string.Join(", ", _features.Suspended.ConvertAll(f => f.name))}");
+        Log.Info($"HUD: suspending {_features.Suspended.Count} renderer features while the UI camera renders: " +
+                 string.Join(", ", _features.Suspended.Select(f => f.name)));
     }
 
-    private void OnEndCamera(Camera cam)
+    private void OnEndCamera(int id)
     {
-        if (cam == null || cam == _cam) _features.Restore();
+        if (id == 0 || id == _camId) _features.Restore();
     }
 
     public void Update(bool want)
@@ -146,6 +149,7 @@ public sealed class HudLayer
         // converted hierarchies (nothing in the world sits inside this camera's tiny view box on that layer).
         _cam.cullingMask = (1 << _uiLayer) | (1 << 5);
         _cam.enabled = false;
+        _camId = _cam.GetInstanceID();
         Log.Info($"HUD: UI camera created, rendering layers {_uiLayer} and 5 (UI)");
     }
 
@@ -224,10 +228,10 @@ public sealed class HudLayer
     {
         PipelineMonitor.BeginCamera -= OnBeginCamera;
         PipelineMonitor.EndCamera -= OnEndCamera;
-        OnEndCamera(null); // never leave features switched off
+        _features.Restore(); // never leave features switched off
         Deactivate("destroy");
         if (_go != null) Object.Destroy(_go);
         if (Texture != null) { Texture.Release(); Object.Destroy(Texture); }
-        _go = null; _cam = null; Texture = null;
+        _go = null; _cam = null; _camId = 0; Texture = null;
     }
 }

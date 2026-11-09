@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Runtime.InteropServices;
 using VibelightValley.Core;
 using VibelightValley.Gfx;
@@ -26,13 +25,26 @@ public sealed unsafe class XrBootstrap : IDisposable
     public const string ViewsChangeExt = "XR_EXT_view_configuration_views_change";
     public bool UserPresence, RefreshRateControl;
 
+    // The runtime's layer and extension lists are the same on every connection attempt: logged when they change.
+    private static string _loggedLayers, _loggedExtensions;
+
     public static XrBootstrap Create(string pluginDir, bool validation)
     {
         XrApi.Load(pluginDir);
         var b = new XrBootstrap();
-        b.CreateInstance(pluginDir, validation);
-        b.QuerySystem();
-        return b;
+        try
+        {
+            b.CreateInstance(pluginDir, validation);
+            b.QuerySystem();
+            return b;
+        }
+        catch
+        {
+            // E.g. SteamVR is up but has no headset: the instance exists and the system query fails. Without this
+            // every retry would leave another instance registered with the runtime.
+            b.Dispose();
+            throw;
+        }
     }
 
     private void CreateInstance(string pluginDir, bool validation)
@@ -48,15 +60,26 @@ public sealed unsafe class XrBootstrap : IDisposable
         try
         {
             var layers = XrApi.EnumerateApiLayers();
-            Log.Info($"OpenXR API layers available ({layers.Count}): {string.Join(", ", layers)}");
+            string layerList = string.Join(", ", layers);
+            if (layerList != _loggedLayers)
+            {
+                _loggedLayers = layerList;
+                Log.Info($"OpenXR API layers available ({layers.Count}): {layerList}");
+            }
             if (validation && layers.Contains("XR_APILAYER_LUNARG_core_validation"))
                 layersToEnable.Add("XR_APILAYER_LUNARG_core_validation");
         }
         catch (Exception ex) { Log.Warn($"OpenXR: enumerate API layers failed: {ex.Message}"); }
 
-        var exts = XrApi.EnumerateExtensions();
-        Log.Block("OpenXR runtime extensions", string.Join("\n", exts));
-        if (!exts.Any(e => e.StartsWith(D3D11Ext + " ")))
+        var exts = XrApi.EnumerateExtensions(); // "name vN"
+        bool Offered(string name) => exts.Exists(e => e.StartsWith(name + " ", StringComparison.Ordinal));
+        string extList = string.Join("\n", exts);
+        if (extList != _loggedExtensions)
+        {
+            _loggedExtensions = extList;
+            Log.Block("OpenXR runtime extensions", extList);
+        }
+        if (!Offered(D3D11Ext))
             throw new InvalidOperationException($"Active OpenXR runtime does not offer {D3D11Ext}. Is SteamVR set as the OpenXR runtime?");
 
         var ici = new XrInstanceCreateInfo { Type = XrStructureType.InstanceCreateInfo };
@@ -68,14 +91,14 @@ public sealed unsafe class XrBootstrap : IDisposable
 
         // Optional: tells us when the headset is put on, so we can recenter then (see XrSession.PollEvents).
         var extsToEnable = new List<string> { D3D11Ext };
-        UserPresence = exts.Any(e => e.StartsWith(UserPresenceExt + " "));
+        UserPresence = Offered(UserPresenceExt);
         if (UserPresence) extsToEnable.Add(UserPresenceExt);
         // Optional: lets us choose the headset refresh rate (Rendering.RefreshRate).
-        RefreshRateControl = exts.Any(e => e.StartsWith(RefreshRateExt + " "));
+        RefreshRateControl = Offered(RefreshRateExt);
         if (RefreshRateControl) extsToEnable.Add(RefreshRateExt);
         // Optional: allows the runtime to change the recommended eye resolution during the session (SteamVR's
         // resolution slider); the controller polls for it and resizes. Without it the size is fixed per session.
-        if (exts.Any(e => e.StartsWith(ViewsChangeExt + " "))) extsToEnable.Add(ViewsChangeExt);
+        if (Offered(ViewsChangeExt)) extsToEnable.Add(ViewsChangeExt);
 
         var strings = new List<IntPtr>();
         try
@@ -159,12 +182,10 @@ public sealed unsafe class XrBootstrap : IDisposable
 
     public void Dispose()
     {
-        if (Instance != 0)
-        {
-            XrResult r = XrApi.xrDestroyInstance(Instance);
-            Log.Info($"OpenXR: xrDestroyInstance -> {r}");
-            Instance = 0;
-            XrApi.ClearInstance();
-        }
+        if (Instance == 0) return;
+        // Null only if resolving the instance functions failed right after xrCreateInstance.
+        if (XrApi.xrDestroyInstance != null) Log.Info($"OpenXR: xrDestroyInstance -> {XrApi.xrDestroyInstance(Instance)}");
+        Instance = 0;
+        XrApi.ClearInstance();
     }
 }

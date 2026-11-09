@@ -22,7 +22,7 @@ public struct FrameRecord
     public bool SubmitProjection;
     public IntPtr EyeTex0, EyeTex1;    // native D3D11 textures, copy-compatible with the eye swapchains
     public bool FlipProjectionY;       // eye textures are bottom-up (Unity): submit a flipped FOV so the compositor flips them
-    public QuadLayer Vignette;         // head-locked darkening of the view edges while turning (VIEW space)
+    public QuadLayer Vignette;         // darkening of the view edges while turning, re-placed in front of the head each frame
     public QuadLayer Hud;              // see-through game UI (alpha blended)
     public QuadLayer Screen;           // opaque virtual screen
 
@@ -65,7 +65,6 @@ public sealed unsafe class XrSession : IDisposable
     private readonly FrameRecord[] _frames = new FrameRecord[Slots];
     private int _slot;
     private readonly object _frameLock = new();
-    private ulong _viewStateFlags;
 
     // Stats for the periodic log line (approximate; written by both threads).
     public long Waits, Begins, Ends, EndFailures, Discarded, ShouldRenderFalse, ProjectionSubmits, HudSubmits, ScreenSubmits, VignetteSubmits;
@@ -312,8 +311,7 @@ public sealed unsafe class XrSession : IDisposable
         }
         rec.View0 = views[0];
         rec.View1 = views[1];
-        _viewStateFlags = vs.ViewStateFlags;
-        rec.PosesValid = (_viewStateFlags & XrConst.ViewStateOrientationValid) != 0
+        rec.PosesValid = (vs.ViewStateFlags & XrConst.ViewStateOrientationValid) != 0
                          && IsUnit(rec.View0.Pose.Orientation) && IsUnit(rec.View1.Pose.Orientation);
         return _slot;
     }
@@ -364,7 +362,7 @@ public sealed unsafe class XrSession : IDisposable
         }
     }
 
-    /// <summary>Copies the slot's textures into the swapchains and calls xrEndFrame with up to 3 layers.</summary>
+    /// <summary>Copies the slot's textures into the swapchains and calls xrEndFrame with up to 4 layers.</summary>
     public void RT_EndFrame(int slot, IntPtr context)
     {
         lock (_frameLock)
@@ -430,7 +428,7 @@ public sealed unsafe class XrSession : IDisposable
         }
     }
 
-    private bool TryQuad(in QuadLayer q, XrSwapchain chain, IntPtr context, ulong flags, out XrCompositionLayerQuad layer, ulong space = 0)
+    private bool TryQuad(in QuadLayer q, XrSwapchain chain, IntPtr context, ulong flags, out XrCompositionLayerQuad layer)
     {
         layer = default;
         if (!q.Submit || !chain.CopyFrom(context, q.Texture)) return false;
@@ -438,7 +436,7 @@ public sealed unsafe class XrSession : IDisposable
         {
             Type = XrStructureType.CompositionLayerQuad,
             LayerFlags = flags,
-            Space = space != 0 ? space : LocalSpace,
+            Space = LocalSpace,
             EyeVisibility = XrConst.EyeVisibilityBoth,
             SubImage = FullImage(chain),
             Pose = q.Pose,

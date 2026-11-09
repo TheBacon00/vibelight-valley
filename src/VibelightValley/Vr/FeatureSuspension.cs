@@ -1,43 +1,42 @@
-using System;
 using System.Collections.Generic;
 using UnityEngine.Rendering.Universal;
 
 namespace VibelightValley.Vr;
 
 /// <summary>
-/// Temporarily switches off some of the game's URP renderer features (Weather, Painterly, FilmEffect, ...) for the
-/// duration of one camera's render: call <see cref="Suspend"/> from beginCameraRendering and <see cref="Restore"/>
-/// from endCameraRendering. Features are shared by every camera on the renderer, so they must always be restored.
+/// Switches some of the game's renderer features off for the duration of one camera's render: call
+/// <see cref="Suspend"/> from beginCameraRendering and <see cref="Restore"/> from endCameraRendering. Features are
+/// shared by every camera on the renderer, so they must always be restored.
 /// (URP reads isActive while building that camera's passes, which happens after beginCameraRendering.)
 /// </summary>
 public sealed class FeatureSuspension
 {
-    private List<ScriptableRendererFeature> _all;
     private readonly List<ScriptableRendererFeature> _suspended = new();
 
-    /// <summary>All renderer features of the game's URP renderers (read once via reflection, then cached).</summary>
-    public List<ScriptableRendererFeature> All
+    /// <summary>The features this instance currently holds switched off.</summary>
+    public IReadOnlyList<ScriptableRendererFeature> Suspended => _suspended;
+
+    /// <param name="which">
+    /// Per feature, by index into <see cref="RendererFeatures.All"/>: switch it off? Null = all of them.
+    /// Features the game itself has switched off are left alone.
+    /// </param>
+    public void Suspend(bool[] which = null)
     {
-        get
+        var all = RendererFeatures.All;
+        for (int i = 0; i < all.Count; i++)
         {
-            if (_all != null) return _all;
-            _all = new List<ScriptableRendererFeature>();
-            foreach (var data in RendererFeatures.RendererDataList()) _all.AddRange(RendererFeatures.Features(data));
-            return _all;
+            if (which != null && (i >= which.Length || !which[i])) continue;
+            var feature = all[i];
+            if (feature == null || !feature.isActive) continue;
+            feature.SetActive(false);
+            _suspended.Add(feature);
         }
-    }
-
-    public List<ScriptableRendererFeature> Suspended => _suspended;
-
-    public void Suspend(Func<ScriptableRendererFeature, bool> which)
-    {
-        foreach (var f in All)
-            if (f != null && f.isActive && which(f)) { f.SetActive(false); _suspended.Add(f); }
     }
 
     public void Restore()
     {
-        foreach (var f in _suspended) if (f != null) f.SetActive(true);
+        foreach (var feature in _suspended)
+            if (feature != null) feature.SetActive(true);
         _suspended.Clear();
     }
 }

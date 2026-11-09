@@ -51,10 +51,16 @@ public sealed class Benchmark
         Add("baseline", null, null);
         Add("internal resolution 0.7", () => ares.Override = 0.7f, () => ares.Override = 1f);
         Add("eye shadows off", () => rig.BenchNoShadows = true, () => { rig.BenchNoShadows = false; rig.ForceSync(); });
+        int cascades = Settings.EyeShadowCascades.Value > 0 ? Math.Min(Settings.EyeShadowCascades.Value, rig.GameShadowCascades) : rig.GameShadowCascades;
+        if (Settings.EyeShadows.Value && cascades > 2)
+            Add($"shadow cascades 2 (now {cascades})", () => rig.BenchCascades = 2, () => rig.BenchCascades = 0);
         Add("LOD boost off", () => rig.BenchNoLodBoost = true, () => rig.BenchNoLodBoost = false);
         foreach (var (index, name) in rig.ActiveFeatures())
             Add($"effect '{name}' off", () => rig.SetDiagnosticFeature(index), () => rig.SetDiagnosticFeature(-1));
         if (hudOn) Add("HUD layer off", () => setHud(false), () => setHud(true));
+        // The reverse of the others: this one switches something back on, so its cost shows as a positive difference.
+        if (Settings.Desktop.Value != DesktopView.Full && !Settings.DesktopCameraEffects.Value)
+            Add("desktop camera effects ON (normally off)", () => rig.BenchDesktopEffects = true, () => rig.BenchDesktopEffects = false);
         Add("baseline again", null, null);
 
         ares.Override = 1f;                 // measure at the full eye resolution
@@ -125,7 +131,7 @@ public sealed class Benchmark
             .OrderByDescending(x => x.ms)
             .Take(5)
             .Select(x => $"{x.Name} {x.ms:F2} ms");
-        Log.Info($"BENCH done. Biggest GPU savings: {string.Join(", ", savings)} (table: BENCH results block)");
+        Log.Info($"BENCH done. Biggest GPU savings: {string.Join(", ", savings)} (full table with CPU times: BENCH results block)");
     }
 
     public void Abort(string why)
@@ -141,7 +147,8 @@ public sealed class Benchmark
     {
         _ares.Override = 0f;
         _rig.SetDiagnosticFeature(-1);
-        _rig.BenchNoShadows = _rig.BenchNoLodBoost = false;
+        _rig.BenchNoShadows = _rig.BenchNoLodBoost = _rig.BenchDesktopEffects = false;
+        _rig.BenchCascades = 0;
         _rig.ForceSync();
     }
 }

@@ -48,8 +48,8 @@ public sealed class Hotkey
     public static class VK
     {
         public const int F2 = 0x71, F3 = 0x72, F4 = 0x73, F5 = 0x74, F6 = 0x75, F7 = 0x76, F8 = 0x77, F9 = 0x78, F10 = 0x79, F11 = 0x7A, F12 = 0x7B;
-        public const int Home = 0x24, End = 0x23, PageUp = 0x21, PageDown = 0x22, Insert = 0x2D, Delete = 0x2E;
-        public const int Up = 0x26, Down = 0x28, Left = 0x25, Right = 0x27;
-        public const int NumPad0 = 0x60, Add = 0x6B, Subtract = 0x6D;
+        public const int PageUp = 0x21, PageDown = 0x22;
+        public const int NumPad1 = 0x61, NumPad2 = 0x62, NumPad3 = 0x63, NumPad5 = 0x65, NumPad7 = 0x67, NumPad8 = 0x68, NumPad9 = 0x69;
+        public const int Add = 0x6B, Subtract = 0x6D;   // numeric keypad + and -
     }
 }

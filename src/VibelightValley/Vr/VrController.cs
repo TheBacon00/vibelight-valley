@@ -1,14 +1,13 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
-using System.Threading;
 using BepInEx.Configuration;
 using VibelightValley.Core;
 using VibelightValley.Diagnostics;
 using VibelightValley.Gfx;
 using VibelightValley.Xr;
 using UnityEngine;
-using UnityEngine.Rendering;
 
 namespace VibelightValley.Vr;
 
@@ -24,14 +23,11 @@ namespace VibelightValley.Vr;
 /// </summary>
 public sealed class VrController
 {
-    private enum Phase { Disconnected, Connecting, Running, Failed }
+    private enum Phase { Disconnected, Running, Failed }
 
     private Phase _phase = Phase.Disconnected;
-    private float _nextConnectAttempt;
-    private int _connectAttempts;
-    private volatile bool _connectDone;   // set by the connect thread
-    private XrBootstrap _connectResult;
-    private Exception _connectError;
+    private readonly HeadsetConnector _connector = new(Plugin.PluginDir);
+    private readonly Hotkey _connectKey = new("F5", Hotkey.VK.F5);
 
     private XrSession _xr;
     private VrRig _rig;
@@ -67,9 +63,9 @@ public sealed class VrController
             (new Hotkey("Ctrl+F2", Hotkey.VK.F2, ctrl: true), () => Toggle(Settings.FastEyeSubmit)),
             (new Hotkey("F3", Hotkey.VK.F3), () => Log.Info($"Hotkey F3: eye render effects: {_rig.CycleDiagnosticFeature()}")),
             (new Hotkey("Ctrl+F3", Hotkey.VK.F3, ctrl: true), ToggleBenchmark),
-            (new Hotkey("F4", 0x73), ToggleHud),
+            (new Hotkey("F4", Hotkey.VK.F4), ToggleHud),
             (new Hotkey("F5", Hotkey.VK.F5), Recenter),
-            (new Hotkey("Num5", 0x65), Recenter),
+            (new Hotkey("Num5", Hotkey.VK.NumPad5), Recenter),
             (new Hotkey("F6", Hotkey.VK.F6), () => Toggle(Settings.FlipEyesY)),
             (new Hotkey("F7", Hotkey.VK.F7), () => Toggle(Settings.FlipScreenY)),
             (new Hotkey("F8", Hotkey.VK.F8), () => Log.Info($"Hotkey: virtual screen {((_screenToggle = !_screenToggle) ? "ON" : "auto")}")),
@@ -77,12 +73,12 @@ public sealed class VrController
             (new Hotkey("F11", Hotkey.VK.F11), () => Log.Info($"Hotkey: VR rendering {((_vrEnabled = !_vrEnabled) ? "ON" : "OFF")}")),
             (new Hotkey("F12", Hotkey.VK.F12), () => Log.Info($"Hotkey: test pattern {((_testPattern = !_testPattern) ? "ON" : "OFF")}")),
             // Viewpoint position: in character mode these change follow distance/height, otherwise the camera offset.
-            (new Hotkey("Num8", 0x68), () => { if (CharacterMode) Nudge(Settings.FollowDistance, -0.25f); else Nudge(Settings.AnchorForward, +0.25f); }),
-            (new Hotkey("Num2", 0x62), () => { if (CharacterMode) Nudge(Settings.FollowDistance, +0.25f); else Nudge(Settings.AnchorForward, -0.25f); }),
-            (new Hotkey("Num9", 0x69), () => Nudge(CharacterMode ? Settings.FollowHeight : Settings.AnchorUp, +0.25f)),
-            (new Hotkey("Num3", 0x63), () => Nudge(CharacterMode ? Settings.FollowHeight : Settings.AnchorUp, -0.25f)),
-            (new Hotkey("Num7", 0x67), () => Nudge(Settings.HudPitchOffset, +2.5f)),
-            (new Hotkey("Num1", 0x61), () => Nudge(Settings.HudPitchOffset, -2.5f)),
+            (new Hotkey("Num8", Hotkey.VK.NumPad8), () => { if (CharacterMode) Nudge(Settings.FollowDistance, -0.25f); else Nudge(Settings.AnchorForward, +0.25f); }),
+            (new Hotkey("Num2", Hotkey.VK.NumPad2), () => { if (CharacterMode) Nudge(Settings.FollowDistance, +0.25f); else Nudge(Settings.AnchorForward, -0.25f); }),
+            (new Hotkey("Num9", Hotkey.VK.NumPad9), () => Nudge(CharacterMode ? Settings.FollowHeight : Settings.AnchorUp, +0.25f)),
+            (new Hotkey("Num3", Hotkey.VK.NumPad3), () => Nudge(CharacterMode ? Settings.FollowHeight : Settings.AnchorUp, -0.25f)),
+            (new Hotkey("Num7", Hotkey.VK.NumPad7), () => Nudge(Settings.HudPitchOffset, +2.5f)),
+            (new Hotkey("Num1", Hotkey.VK.NumPad1), () => Nudge(Settings.HudPitchOffset, -2.5f)),
             (new Hotkey("PageUp", Hotkey.VK.PageUp), () => ChangeRenderScale(+0.1f)),
             (new Hotkey("PageDown", Hotkey.VK.PageDown), () => ChangeRenderScale(-0.1f)),
             (new Hotkey("Num+", Hotkey.VK.Add), () => Scale(1.25f)),
@@ -91,8 +87,9 @@ public sealed class VrController
         PipelineMonitor.BeginContext += OnBeginContext;
         RenderThread.Handler = OnRenderThread;
         Log.Info($"VrController created (testPattern={testPattern}). Keys: F2 adaptive resolution, Ctrl+F2 fast eye submit, " +
-                 "F3 effects one by one, Ctrl+F3 benchmark, F4 HUD, F5/Num5 recenter, F6/F7 flip eyes/screen, F8 screen, " +
-                 "F10 PNG dump, F11 VR on/off, F12 test pattern, Num8/2 fwd/back, Num9/3 up/down, Num+/- scale; both sticks = HUD");
+                 "F3 effects one by one, Ctrl+F3 benchmark, F4 HUD, F5/Num5 recenter (or connect now), F6/F7 flip eyes/screen, " +
+                 "F8 screen, F10 PNG dump, F11 VR on/off, F12 test pattern, Num8/2 fwd/back, Num9/3 up/down, Num+/- scale; " +
+                 "both sticks = HUD");
     }
 
     // ================================================================== lifecycle
@@ -101,11 +98,8 @@ public sealed class VrController
     {
         switch (_phase)
         {
-            case Phase.Disconnected when Time.realtimeSinceStartup >= _nextConnectAttempt:
-                StartConnect();
-                break;
-            case Phase.Connecting when _connectDone:
-                FinishConnect();
+            case Phase.Disconnected:
+                DisconnectedUpdate();
                 break;
             case Phase.Running:
                 RunningUpdate();
@@ -113,39 +107,25 @@ public sealed class VrController
         }
     }
 
-    /// <summary>xrCreateInstance can take seconds (it may launch SteamVR), so it runs on a background thread.</summary>
-    private void StartConnect()
+    private void DisconnectedUpdate()
     {
-        if (!GfxDevice.Acquire()) { _phase = Phase.Failed; Log.Error("VR disabled: no usable D3D11 device"); return; }
-        _connectAttempts++;
-        _phase = Phase.Connecting;
-        _connectDone = false;
-        Log.Info($"Connecting to OpenXR (attempt {_connectAttempts})...");
-        new Thread(() =>
+        if (!GfxDevice.Acquire())
         {
-            try { _connectResult = XrBootstrap.Create(Plugin.PluginDir, Settings.EnableValidationLayer.Value); }
-            catch (Exception ex) { _connectError = ex; }
-            _connectDone = true;
-        }) { IsBackground = true, Name = "VibelightValley-XrConnect" }.Start();
-    }
-
-    private void FinishConnect()
-    {
-        if (_connectError != null)
-        {
-            var ex = _connectError;
-            _connectError = null;
-            bool noHeadset = ex is XrException { Result: XrResult.ErrorRuntimeFailure or XrResult.ErrorFormFactorUnavailable or XrResult.ErrorRuntimeUnavailable };
-            Log.Limited("connectfail", 5, $"OpenXR connect failed: {ex.Message}" +
-                (noHeadset ? " -> headset not connected or SteamVR not ready (see Steam\\logs\\vrserver.txt)." : "") +
-                $" Retrying every {Settings.ConnectRetrySeconds.Value}s.", 'W');
-            if (_connectAttempts == 1) Log.Error("OpenXR connect failure detail", ex);
-            RetryLater(2f);
+            _phase = Phase.Failed;
+            Log.Error("VR disabled: no usable D3D11 device");
             return;
         }
+        if (_connectKey.Pressed())
+        {
+            Log.Info("Hotkey F5: connecting to the headset now");
+            _connector.RetryNow();
+        }
+        XrBootstrap boot = _connector.Update(Time.realtimeSinceStartup);
+        if (boot != null) StartSession(boot);
+    }
 
-        var boot = _connectResult;
-        _connectResult = null;
+    private void StartSession(XrBootstrap boot)
+    {
         try
         {
             if (boot.GraphicsRequirements.AdapterLuid != GfxDevice.Adapter.Luid)
@@ -165,6 +145,9 @@ public sealed class VrController
             _phase = Phase.Running;
             _tracedFrames = 0;
             _wantRecenter = true;
+            _shown = false;
+            _connector.SessionEstablished();
+            FrameProfiler.Reset();
             ApplyGameSettings(vrRunning: true);
             Log.Info("VR RUNNING - waiting for the OpenXR session to become READY");
         }
@@ -172,9 +155,16 @@ public sealed class VrController
         {
             Log.Error("VR session setup failed", ex);
             TearDown();
-            boot?.Dispose();
-            RetryLater(5f);
+            boot.Dispose();
+            Disconnect();
         }
+    }
+
+    /// <summary>Back to waiting for a headset; the connector decides when to try again.</summary>
+    private void Disconnect()
+    {
+        _phase = Phase.Disconnected;
+        _connector.Disconnected(Time.realtimeSinceStartup);
     }
 
     /// <summary>Per-eye render size: SteamVR's recommendation (largest of both eyes) x RenderScale, clamped, even.</summary>
@@ -220,11 +210,7 @@ public sealed class VrController
         Log.Info($"Hotkey: RenderScale={Settings.RenderScale.Value}");
     }
 
-    private void RetryLater(float minSeconds)
-    {
-        _phase = Phase.Disconnected;
-        _nextConnectAttempt = Time.realtimeSinceStartup + Mathf.Max(minSeconds, Settings.ConnectRetrySeconds.Value);
-    }
+    // ------------------------------------------------------------------ game settings while VR runs
 
     /// <summary>VSync off (the headset paces the game via xrWaitFrame) and no exclusive fullscreen while VR runs.</summary>
     private void ApplyGameSettings(bool vrRunning)
@@ -257,7 +243,7 @@ public sealed class VrController
 
     /// <summary>
     /// The game can re-apply its own VSync or frame cap later (e.g. when it loads its settings). Either one makes the
-    /// desktop monitor (165 Hz here) pace the game alongside the headset, which costs time and causes stutter.
+    /// desktop monitor pace the game alongside the headset, which costs time and causes stutter.
     /// </summary>
     private void EnforceNoVSync()
     {
@@ -282,13 +268,15 @@ public sealed class VrController
         catch (Exception ex) { Log.Limited("vsyncguard", 3, $"VSync guard: {ex.Message}", 'W'); }
     }
 
+    // ------------------------------------------------------------------ per frame (Update)
+
     private void RunningUpdate()
     {
         if (!_xr.PollEvents())
         {
             Log.Warn("OpenXR session ended (SteamVR closed or headset lost) - tearing down; will reconnect");
             TearDown();
-            RetryLater(5f);
+            Disconnect();
             return;
         }
         if (_xr.RecenterRequested) { _xr.RecenterRequested = false; _wantRecenter = true; }
@@ -298,17 +286,37 @@ public sealed class VrController
         if (_padHud.Pressed()) ToggleHud();
         CheckEyeSize();
 
-        bool eyesWanted = _vrEnabled && !_testPattern && _xr.Running
-                          && _xr.State is XrSessionState.Synchronized or XrSessionState.Visible or XrSessionState.Focused;
-        _rig.Prepare(eyesWanted);
+        UpdateShown();
+        _rig.Prepare(_shown && _vrEnabled && !_testPattern);
         EnforceNoVSync();
         if (_bench != null && !_bench.Update(_rig.Active)) _bench = null;
         _ares.Update(_rig.Active, _xr.LastPredictedPeriod / 1e6f, FrameProfiler.LastGpuMs, FrameProfiler.LastCpuMs);
         _rig.EyeRenderScale = _ares.Scale;
         // Overlay UI always goes through the UI camera, except in the world with the HUD switched off: the desktop
         // capture used for menus/title does not contain overlay UI (e.g. the menu tab bar).
-        _hud.Update(_xr.Running && (_hudEnabled || !_rig.Active));
+        _hud.Update(_shown && (_hudEnabled || !_rig.Active));
         Stats();
+    }
+
+    // The runtime shows our frames only in the VISIBLE and FOCUSED session states. In SYNCHRONIZED - the headset was
+    // taken off, or not put on yet - it asks for no rendering at all (shouldRender is false every frame). Rendering
+    // both eyes then is wasted work, and with the UI redirected into the headset the desktop window would show a black
+    // screen. So while the headset is idle the eyes and the UI layer are off and the game shows on the desktop as usual.
+    private const float IdleGraceSeconds = 1f;   // ignore a brief blip, which would cost a re-setup of the UI layer
+    private bool _shown;
+    private float _lastVisible;
+
+    private void UpdateShown()
+    {
+        float now = Time.realtimeSinceStartup;
+        bool visible = _xr.Running && _xr.State is XrSessionState.Visible or XrSessionState.Focused;
+        if (visible) _lastVisible = now;
+        bool shown = visible || (_shown && _xr.Running && now - _lastVisible < IdleGraceSeconds);
+        if (shown == _shown) return;
+        _shown = shown;
+        Log.Info(shown
+            ? "Headset is showing the game: VR rendering on"
+            : $"Headset idle (session state {_xr.State}): VR rendering paused, the desktop window shows the game");
     }
 
     // ================================================================== frame
@@ -316,19 +324,12 @@ public sealed class VrController
     private bool InFrameLoop => _phase == Phase.Running && _xr != null && _xr.Running;
     private bool Tracing => _tracedFrames < Settings.DetailedFrameTraceCount.Value;
 
-    private void OnBeginContext(ScriptableRenderContext ctx, Il2CppSystem.Collections.Generic.List<Camera> cams)
+    private void OnBeginContext(List<int> cameraIds)
     {
-        if (!InFrameLoop || !_rig.Active || _slotFrame == Time.frameCount) return;
         // Unity renders off-screen cameras (ours) and on-screen cameras in separate contexts; wait in ours.
-        int eyeId = _rig.Eyes[0].GetInstanceID();
-        for (int i = 0; i < cams.Count; i++)
-        {
-            var c = cams[i];
-            if (c == null || c.GetInstanceID() != eyeId) continue;
-            try { WaitAndBegin(placeEyes: true); }
-            catch (Exception ex) { Error("WaitAndBegin", ex); }
-            return;
-        }
+        if (!InFrameLoop || !_rig.Active || _slotFrame == Time.frameCount || !cameraIds.Contains(_rig.LeftEyeId)) return;
+        try { WaitAndBegin(placeEyes: true); }
+        catch (Exception ex) { Error("WaitAndBegin", ex); }
     }
 
     private void WaitAndBegin(bool placeEyes)
@@ -338,6 +339,7 @@ public sealed class VrController
             // A waited frame was never ended (exception, skipped coroutine). End it empty or the runtime stalls.
             ref FrameRecord stale = ref _xr.Frame(_slot);
             stale.SubmitProjection = false;
+            stale.Vignette = default;
             stale.Hud = default;
             stale.Screen = default;
             _xr.IssueEnd(_slot);
@@ -372,7 +374,8 @@ public sealed class VrController
             FrameProfiler.ComposeBegin();
             try { OnEndOfFrame(); }
             catch (Exception ex) { Error("OnEndOfFrame", ex); }
-            FrameProfiler.FrameEnd();
+            // Unity's frame timings are only needed (and only captured) while VR runs.
+            FrameProfiler.FrameEnd(sampleUnityTimings: _phase == Phase.Running);
         }
     }
 
@@ -472,12 +475,12 @@ public sealed class VrController
         var x = _xr;
         long waits = x.Waits - _lastWaits;
         _lastWaits = x.Waits;
+        long copyFail = x.Eyes[0].Failures + x.Eyes[1].Failures + x.HudChain.Failures + x.ScreenChain.Failures + x.VignetteChain.Failures;
         Log.Info($"VRSTATS state={x.State} xrFps={waits / 5f:F1} waitAvg={(x.Waits > 0 ? x.WaitMsTotal / x.Waits : 0):F2}ms waitMax={x.WaitMsMax:F1}ms " +
                  $"period={x.LastPredictedPeriod / 1e6:F2}ms begins={x.Begins} ends={x.Ends} endFail={x.EndFailures} discarded={x.Discarded} " +
-                 $"noRender={x.ShouldRenderFalse} layers proj/hud/screen/vignette={x.ProjectionSubmits}/{x.HudSubmits}/{x.ScreenSubmits}/{x.VignetteSubmits}" +
-                 $"copyFail={x.Eyes[0].Failures + x.Eyes[1].Failures + x.HudChain.Failures + x.ScreenChain.Failures} " +
-                 $"eyes={(_rig.Active ? "on" : "off")} hud={(_hud.Active ? "on" : "off")} test={_testPattern} screenToggle={_screenToggle} " +
-                 $"scale={Settings.WorldScale.Value} anchor F/U={Settings.AnchorForward.Value}/{Settings.AnchorUp.Value}");
+                 $"noRender={x.ShouldRenderFalse} layers proj/hud/screen/vignette={x.ProjectionSubmits}/{x.HudSubmits}/{x.ScreenSubmits}/{x.VignetteSubmits} " +
+                 $"copyFail={copyFail} shown={_shown} eyes={(_rig.Active ? "on" : "off")} hud={(_hud.Active ? "on" : "off")} test={_testPattern} " +
+                 $"screenToggle={_screenToggle} scale={Settings.WorldScale.Value} anchor F/U={Settings.AnchorForward.Value}/{Settings.AnchorUp.Value}");
         Log.Info($"RIG {_rig.DebugLine()} turn={_rig.TurnSpeed:F0}deg/s vignettePeak={_composer.PeakVignette:F2} follow={Settings.Follow.Value}");
         _composer.PeakVignette = 0;
         Log.Info(FrameProfiler.Summary() + $" eye={_eye.w}x{_eye.h} {_ares.Summary()} fastSubmit={Settings.FastEyeSubmit.Value} " +
@@ -513,7 +516,7 @@ public sealed class VrController
 
     public void TearDown()
     {
-        _phase = Phase.Failed; // callers that want to reconnect set Disconnected afterwards (RetryLater)
+        _phase = Phase.Failed; // callers that want to reconnect call Disconnect() afterwards
         try
         {
             Log.Info("VR teardown");
@@ -528,5 +531,6 @@ public sealed class VrController
         catch (Exception ex) { Log.Error("TearDown", ex); }
         _hud = null; _xr = null; _rig = null; _composer = null;
         _slot = -1;
+        _shown = false;
     }
 }

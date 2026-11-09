@@ -18,7 +18,7 @@ public struct D3D11Texture2DDesc
 public static unsafe class D3D11
 {
     // IUnknown
-    private const int SlotQueryInterface = 0, SlotAddRef = 1, SlotRelease = 2;
+    private const int SlotQueryInterface = 0, SlotRelease = 2;
     // ID3D11DeviceChild
     private const int SlotChildGetDevice = 3;
     // ID3D11Texture2D
@@ -26,16 +26,13 @@ public static unsafe class D3D11
     // ID3D11Device
     private const int SlotDevGetFeatureLevel = 37, SlotDevGetCreationFlags = 38, SlotDevGetDeviceRemovedReason = 39, SlotDevGetImmediateContext = 40;
     // ID3D11DeviceContext
-    private const int SlotCtxCopyResource = 47, SlotCtxFlush = 111;
+    private const int SlotCtxCopyResource = 47;
     // IDXGIDevice / IDXGIAdapter
     private const int SlotDxgiDevGetAdapter = 7, SlotDxgiAdapterGetDesc = 8;
 
     private static readonly Guid IID_IDXGIDevice = new("54ec77fa-1377-44e6-8c32-88fd5f44c84c");
 
     private static void** Vtbl(IntPtr obj) => *(void***)obj;
-
-    public static uint AddRef(IntPtr obj) =>
-        obj == IntPtr.Zero ? 0 : ((delegate* unmanaged[Stdcall]<IntPtr, uint>)Vtbl(obj)[SlotAddRef])(obj);
 
     public static uint Release(IntPtr obj) =>
         obj == IntPtr.Zero ? 0 : ((delegate* unmanaged[Stdcall]<IntPtr, uint>)Vtbl(obj)[SlotRelease])(obj);
@@ -74,9 +71,6 @@ public static unsafe class D3D11
 
     public static void CopyResource(IntPtr context, IntPtr dst, IntPtr src) =>
         ((delegate* unmanaged[Stdcall]<IntPtr, IntPtr, IntPtr, void>)Vtbl(context)[SlotCtxCopyResource])(context, dst, src);
-
-    public static void Flush(IntPtr context) =>
-        ((delegate* unmanaged[Stdcall]<IntPtr, void>)Vtbl(context)[SlotCtxFlush])(context);
 
     public static string FeatureLevelName(uint fl) => fl switch
     {
@@ -127,10 +121,8 @@ public static unsafe class D3D11
 
 public static class DxgiFormat
 {
-    public const uint R8G8B8A8_TYPELESS = 27, R8G8B8A8_UNORM = 28, R8G8B8A8_UNORM_SRGB = 29;
-    public const uint B8G8R8A8_UNORM = 87, B8G8R8A8_TYPELESS = 90, B8G8R8A8_UNORM_SRGB = 91;
-    public const uint R16G16B16A16_FLOAT = 10, R16G16B16A16_TYPELESS = 9;
-    public const uint R10G10B10A2_UNORM = 24, R10G10B10A2_TYPELESS = 23, R11G11B10_FLOAT = 26;
+    public const uint R8G8B8A8_UNORM = 28, R8G8B8A8_UNORM_SRGB = 29;
+    public const uint B8G8R8A8_UNORM = 87, B8G8R8A8_UNORM_SRGB = 91;
 
     public static string Name(uint f) => f switch
     {

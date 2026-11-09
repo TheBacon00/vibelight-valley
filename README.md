@@ -33,6 +33,9 @@ your viewpoint hovers behind your character like the normal game camera does.
   - Requests a fixed refresh rate (90 Hz by default), so the game frame rate matches the headset.
   - Adaptive resolution: busy scenes render at a lower internal resolution instead of dropping frames.
   - Recenters automatically when you put the headset on.
+- **Stays out of the way without a headset:**
+  - No headset? The game runs flat, and VR starts by itself when SteamVR comes up.
+  - Headset taken off? The eyes stop rendering and the desktop window shows the normal game.
 - **Safe and debuggable:**
   - If VR fails, the game keeps running flat and the log says why.
   - Detailed log: `BepInEx\VibelightValley\vibelight-valley.log`.
@@ -67,7 +70,7 @@ old copy and keeps your settings.
 | Input | Action |
 |---|---|
 | Click **both sticks** / **F4** | HUD layer on/off |
-| **F5** / Num5 | Recenter (look straight ahead first) |
+| **F5** / Num5 | Recenter (look straight ahead first). **F5** while VR isn't connected: connect now |
 | **F8** | Show the game window as a floating screen |
 | **F11** | VR rendering on/off |
 | Num8 / Num2 | Viewpoint closer / farther |
@@ -99,6 +102,8 @@ the first start, and every entry is documented in the file. The most useful ones
 | Rendering | `DesktopView` | Mirror | Desktop window while in VR: `Mirror` (left eye + UI) or `Minimal` (UI only) skip the game's own world render; `Full` = normal view (slower) |
 | Rendering | `EyeShadowDistance` | 40 | Shadow distance in the headset (game: 80); shorter = faster in busy scenes |
 | Rendering | `EyeShadows` | true | Shadows in the headset (each eye renders its own; `false` helps a lot in busy scenes) |
+| Rendering | `EyeShadowCascades` | 0 | Shadow cascades in the headset (0 = as the game, normally 4); `2` is faster, with slightly softer nearby shadows |
+| Rendering | `DesktopCameraEffects` | false | Keep the game's render effects on the game camera although its picture isn't shown. Set `true` only if something in the headset stops updating |
 | Rendering | `EyeDrawDistance` | 0 | Far clip for the eyes in metres (0 = game default); lower = faster |
 | Comfort | `FollowMode` | Character | `Character` = fixed spot behind your character; `GameCamera` = ride the game camera |
 | Comfort | `FollowDistance` / `FollowHeight` | 6 / 3 | Character mode viewpoint |
@@ -118,12 +123,15 @@ the world twice per frame, once per eye.
 - **Refresh rate:** the game's own logic needs several milliseconds per frame. If the frame rate stays below 120 even
   at a low resolution, set the headset to 90 Hz in SteamVR (*Settings → Video*). The mod can't change it on headsets
   that only offer one rate to OpenXR.
-- **Benchmark:** stand still facing a busy spot and press **Ctrl+F3**. For about 40 seconds the mod switches one thing
-  off at a time and measures the difference: lower resolution, shadows, the LOD boost, each of the game's render
-  effects, and the HUD. The results go to the log as a `BENCH results` table, with the biggest savings summarised in
-  a `BENCH done` line.
+- **Benchmark:** stand still facing a busy spot and press **Ctrl+F3**. For about 45 seconds the mod changes one thing
+  at a time and measures the difference: lower resolution, shadows, fewer shadow cascades, the LOD boost, each of the
+  game's render effects, the HUD, and the effects on the desktop camera. The results go to the log as a
+  `BENCH results` table (GPU and CPU time per step), with the biggest savings summarised in a `BENCH done` line.
 - **The log's `PERF` lines** (every 5 s) show where each frame's time goes: `logic` (the game), `render(cpu)`,
   `gpu`, and `scale`, the current adaptive resolution.
+- **Headset off:** while SteamVR isn't showing the game (headset taken off, or not put on yet), the eyes aren't
+  rendered at all and the desktop window shows the normal game. Without a headset the mod only checks now and then
+  whether one has appeared (see [Troubleshooting](#troubleshooting)).
 
 ## Updating, turning it off, uninstalling
 
@@ -154,8 +162,12 @@ Logs (the installer's *Mod logs* and *Installer log* links open them):
 - `%LOCALAPPDATA%\VibelightValley-Installer\installer.log` (installer)
 
 Common problems:
-- **"xrCreateInstance failed: ErrorRuntimeFailure"** — the headset is not connected or SteamVR is not ready. The mod
-  retries every 10 s.
+- **"VR not available: headset not connected or SteamVR not ready"** — the game runs flat until a headset shows up:
+  - While SteamVR is running, the mod tries again every 10 s (`ConnectRetrySeconds`), so VR starts a few seconds
+    after the headset connects.
+  - While SteamVR isn't running, every attempt would start it, so the mod waits longer each time (10 s, 20 s, 40 s …
+    up to 5 minutes).
+  - **F5** tries right away.
 - **Game seems stuck when launched from inside VR** — Steam may be showing a dialog on the desktop monitor.
 - **View faces the wrong way** — press F5 or recenter from the SteamVR menu.
 - **Upside-down image or wrong colours** — press F12 for the test pattern: the top half should be green, with a
@@ -215,8 +227,10 @@ A VR frame needs two images, one per eye, from slightly different positions. Eve
    - There it copies each eye image into an OpenXR swapchain (`CopyResource`) and submits the frame
      (`xrEndFrame`).
 
-To stay fast, the normal game camera is told to draw nothing while VR is on. The desktop window shows a copy of the
-left eye instead. Shadows and level-of-detail are tuned only for the eye cameras.
+To stay fast, the normal game camera is told to draw nothing while VR is on (no world, no effects). The desktop
+window shows a copy of the left eye instead. Shadows and level-of-detail are tuned only for the eye cameras. And
+when SteamVR reports that it isn't showing the game, because the headset was taken off, the eye cameras are
+switched off and the game draws to the desktop as usual.
 
 ### 4. The HUD and menus: layers
 
@@ -263,7 +277,7 @@ comes with Windows.
 |---|---|
 | [src/VibelightValley/Xr](src/VibelightValley/Xr) | OpenXR: loader calls, session, swapchains, quad layers, math |
 | [src/VibelightValley/Gfx](src/VibelightValley/Gfx) | Direct3D 11 access and the render-thread callback |
-| [src/VibelightValley/Vr](src/VibelightValley/Vr) | The VR rig: eye cameras, HUD layer, frame composition, comfort, controls |
+| [src/VibelightValley/Vr](src/VibelightValley/Vr) | The VR rig: connecting to the headset, eye cameras, HUD layer, frame composition, comfort, controls |
 | [src/VibelightValley/Diagnostics](src/VibelightValley/Diagnostics) | Logging, startup report, frame profiler, dumps |
 | [src/VibelightValley/Core](src/VibelightValley/Core) | Settings, log file, hotkeys |
 | [src/Installer](src/Installer) | The installer app |
@@ -325,6 +339,8 @@ Full license details: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
    - `fetch-deps` downloads the OpenXR loader into `lib\native` and a local .NET 8 SDK into `.tools`.
    - `build` compiles and deploys into the game (`-NoDeploy` to only build, `-GameDir` for another location).
    - It also updates `release/plugin/` (the DLL plus a hash of the source it was built from).
+   - If the installer put a release there before, `build` marks its record as a development build (`x.y.z-dev`).
+     The installer and the mod's log then show that, and the installer doesn't offer the older release as an update.
 3. `tools\package.ps1` builds the release files in `dist\`: `VibelightValley-Installer.exe`,
    `VibelightValley-x.y.z.zip` and `manifest.json`.
    - **Test a release before publishing:**

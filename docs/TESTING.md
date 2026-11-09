@@ -4,7 +4,8 @@ Already installed: BepInEx be.788 + `BepInEx\plugins\VibelightValley\`. Config: 
 
 ## Steps
 1. Connect the headset to SteamVR first (Steam Link / VRLink) until SteamVR shows it as ready.
-   You can also connect it while the game is running: the mod retries every 10 s.
+   You can also connect it while the game is running: once SteamVR is up the mod connects within about 10 s
+   (press **F5** in the game window to try right away).
 2. Start DDLV from Steam. Leave the display mode at borderless/windowed.
 3. In the headset:
    - **Title screen / loading:** you should see a floating screen showing the game window.
@@ -19,7 +20,7 @@ Already installed: BepInEx be.788 + `BepInEx\plugins\VibelightValley\`. Config: 
 | Key | Action |
 |---|---|
 | F4 / click both sticks | HUD layer on/off (game UI as a see-through layer) |
-| F5 / Num5 | Recenter (look straight ahead first) |
+| F5 / Num5 | Recenter (look straight ahead first); F5 while VR isn't connected: connect now |
 | F6 / F7 | Flip eye images / flip virtual screen vertically |
 | F8 | Toggle the virtual screen (menus, inventory) |
 | F9 | Dump cameras/canvases/volumes to the log |

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using VibelightValley.Core;
 using VibelightValley.Diagnostics;
 using VibelightValley.Xr;
@@ -23,20 +24,28 @@ public sealed class VrRig
     public readonly Camera[] Eyes = new Camera[2];
     public readonly EyeTarget[] Targets = new EyeTarget[2];
     private readonly UniversalAdditionalCameraData[] _eyeData = new UniversalAdditionalCameraData[2];
+    private readonly int[] _eyeIds = new int[2];
     private readonly GameObject _root;
+    private readonly long _format;
 
     /// <summary>Internal render scale for the eyes (adaptive resolution), applied as URP's renderScale while they render.</summary>
     public float EyeRenderScale = 1f;
 
-    /// <summary>Benchmark switches: render the eyes without shadows / without the LOD boost.</summary>
-    public bool BenchNoShadows, BenchNoLodBoost;
+    // Benchmark switches (Ctrl+F3): render the eyes without shadows / without the LOD boost / with this many shadow
+    // cascades (0 = the setting), and keep the game's effects on the desktop camera.
+    public bool BenchNoShadows, BenchNoLodBoost, BenchDesktopEffects;
+    public int BenchCascades;
 
     private Camera _source;            // the game camera we follow (null = eyes off)
-    private int _sourceId;
+    private UniversalAdditionalCameraData _sourceData;
+    private int _sourceId;             // its instance id (0 = eyes off)
     private float _nextSync;
 
     public bool Active { get; private set; }
     public bool MenuOpen { get; private set; }
+
+    /// <summary>Instance id of the left eye camera: marks the render context in which the eyes render.</summary>
+    public int LeftEyeId => _eyeIds[0];
 
     // Recenter origin: head pose in OpenXR LOCAL space (Unity handedness), yaw only.
     public Vector3 OriginPos;
@@ -51,12 +60,13 @@ public sealed class VrRig
 
     public VrRig(int width, int height, long swapchainFormat)
     {
+        _format = swapchainFormat;
         _root = new GameObject("VibelightValley_Rig");
         Object.DontDestroyOnLoad(_root); // deliberately no hideFlags: hidden cameras may be skipped by the pipeline
         for (int i = 0; i < 2; i++)
         {
-            Targets[i] = new EyeTarget(i == 0 ? "EyeL" : "EyeR", width, height, 24, swapchainFormat);
-            var go = new GameObject(i == 0 ? "VibelightValley_EyeL" : "VibelightValley_EyeR");
+            Targets[i] = new EyeTarget(TargetName(i), width, height, 24, swapchainFormat);
+            var go = new GameObject(EyeName(i));
             go.transform.SetParent(_root.transform, false);
             var cam = go.AddComponent<Camera>();
             _eyeData[i] = go.AddComponent<UniversalAdditionalCameraData>();
@@ -64,9 +74,8 @@ public sealed class VrRig
             cam.stereoTargetEye = StereoTargetEyeMask.None;
             cam.targetTexture = Targets[i].Texture;
             Eyes[i] = cam;
+            _eyeIds[i] = cam.GetInstanceID();
         }
-        _format = swapchainFormat;
-        _eyeIds = new[] { Eyes[0].GetInstanceID(), Eyes[1].GetInstanceID() };
         PipelineMonitor.BeginCamera += OnBeginCamera;
         PipelineMonitor.EndCamera += OnEndCamera;
         PipelineMonitor.BeginContext += OnBeginContext;
@@ -74,7 +83,9 @@ public sealed class VrRig
         Log.Info($"VrRig created: eyes {width}x{height}");
     }
 
-    private readonly long _format;
+    private static string EyeName(int i) => i == 0 ? "VibelightValley_EyeL" : "VibelightValley_EyeR";
+    private static string TargetName(int i) => i == 0 ? "EyeL" : "EyeR";
+    private bool IsEye(int id) => id == _eyeIds[0] || id == _eyeIds[1];
 
     /// <summary>
     /// New eye resolution. The caller must have fenced the render thread first: the old textures are destroyed here.
@@ -84,7 +95,7 @@ public sealed class VrRig
         for (int i = 0; i < 2; i++)
         {
             Targets[i].Destroy();
-            Targets[i] = new EyeTarget(i == 0 ? "EyeL" : "EyeR", width, height, 24, _format);
+            Targets[i] = new EyeTarget(TargetName(i), width, height, 24, _format);
             Eyes[i].targetTexture = Targets[i].Texture;
         }
         Log.Info($"VrRig: eyes resized to {width}x{height}");
@@ -106,35 +117,37 @@ public sealed class VrRig
     }
 
     private Camera _stripped;
+    private UniversalAdditionalCameraData _strippedData;
+    private int _strippedId;           // instance id of the camera stripped right now (0 = none)
     private SavedCamera _saved;
     private bool _stripLogged;
 
     /// <summary>True when the game camera rendered nothing this frame (the desktop needs a mirror instead).</summary>
     public bool DesktopStripped { get; private set; }
 
-    private void OnBeginContext(UnityEngine.Rendering.ScriptableRenderContext ctx, Il2CppSystem.Collections.Generic.List<Camera> cams)
+    private void OnBeginContext(List<int> cameraIds)
     {
+        if (!Active || _strippedId != 0 || Settings.Desktop.Value == DesktopView.Full || !cameraIds.Contains(_sourceId)) return;
         var c = _source;
-        if (c == null || !Active || _stripped != null || Settings.Desktop.Value == DesktopView.Full) return;
-        int id = c.GetInstanceID();
-        bool inContext = false;
-        for (int i = 0; i < cams.Count && !inContext; i++) inContext = cams[i] != null && cams[i].GetInstanceID() == id;
-        if (!inContext) return;
-
-        var ad = c.GetComponent<UniversalAdditionalCameraData>();
+        // A plain reference from here on (a destroyed component becomes a real null): "is null" below is then a
+        // reference test, where Unity's "== null" would call into the game every time.
+        var ad = _sourceData != null ? _sourceData : null;
+        bool hasData = ad is not null;
         _saved = new SavedCamera
         {
             CullingMask = c.cullingMask, ClearFlags = c.clearFlags, Background = c.backgroundColor, Hdr = c.allowHDR,
-            PostFX = ad != null && ad.renderPostProcessing, Shadows = ad == null || ad.renderShadows,
-            DepthTex = ad != null && ad.requiresDepthTexture, ColorTex = ad != null && ad.requiresColorTexture,
-            AA = ad != null ? ad.antialiasing : AntialiasingMode.None,
+            PostFX = hasData && ad.renderPostProcessing, Shadows = !hasData || ad.renderShadows,
+            DepthTex = hasData && ad.requiresDepthTexture, ColorTex = hasData && ad.requiresColorTexture,
+            AA = hasData ? ad.antialiasing : AntialiasingMode.None,
         };
         _stripped = c;
+        _strippedData = ad;
+        _strippedId = _sourceId;
         c.cullingMask = 0;
         c.clearFlags = CameraClearFlags.SolidColor;
         c.backgroundColor = Color.black;
         c.allowHDR = false;
-        if (ad != null)
+        if (hasData)
         {
             ad.renderPostProcessing = false;
             ad.antialiasing = AntialiasingMode.None;
@@ -148,21 +161,27 @@ public sealed class VrRig
         Log.Info($"Desktop view {Settings.Desktop.Value}: game camera '{c.name}' skips its world render while VR shows the world");
     }
 
-    private void OnEndContext(Il2CppSystem.Collections.Generic.List<Camera> cams) => RestoreGameCamera();
+    private void OnEndContext()
+    {
+        _features.Restore();          // safety: normally done when the camera ended
+        RestoreGameCamera();
+    }
 
     private void RestoreGameCamera()
     {
+        if (_strippedId == 0) return;
         var c = _stripped;
+        var ad = _strippedData;
         _stripped = null;
-        if (c == null) return;
+        _strippedData = null;
+        _strippedId = 0;
         try
         {
             c.cullingMask = _saved.CullingMask;
             c.clearFlags = _saved.ClearFlags;
             c.backgroundColor = _saved.Background;
             c.allowHDR = _saved.Hdr;
-            var ad = c.GetComponent<UniversalAdditionalCameraData>();
-            if (ad == null) return;
+            if (ad is null) return;
             ad.renderPostProcessing = _saved.PostFX;
             ad.antialiasing = _saved.AA;
             ad.renderShadows = _saved.Shadows;
@@ -172,41 +191,86 @@ public sealed class VrRig
         catch (Exception ex) { Log.Limited("restorecam", 5, $"Restoring the game camera failed: {ex.Message}", 'W'); }
     }
 
-    // ------------------------------------------------------------------ per-eye render effects
-    // Some of the game's full-screen effects may look different per eye (e.g. computed for the game camera, or
-    // screen-space patterns), which is uncomfortable in stereo. Rendering.EyeDisabledFeatures switches chosen ones
-    // off for the eye cameras only; F3 tries them one at a time to find the culprit.
-    private readonly FeatureSuspension _eyeFeatures = new();
-    private readonly int[] _eyeIds;
-    private int _diagFeature = -1;      // F3: index of the single feature switched off for testing (-1 = none)
-    private string _disabledRaw;
-    private string[] _disabled = Array.Empty<string>();
+    // ------------------------------------------------------------------ per-camera render settings
+    // Several things the eyes need differently are global: the URP asset (shadows, render scale), QualitySettings
+    // (LOD bias) and the renderer's features. They are changed in beginCameraRendering for one of our cameras and
+    // put back in endCameraRendering, so every other camera - and the game's own code - sees the game's values.
+    private readonly FeatureSuspension _features = new();
+    private UniversalRenderPipelineAsset _urp;   // refreshed by SyncFrom
 
-    private bool IsEyeId(int id) => id == _eyeIds[0] || id == _eyeIds[1];
+    private void OnBeginCamera(Camera cam, int id)
+    {
+        if (id == _strippedId)
+        {
+            // Its image is never shown, so the game's full-screen effects and grass on it are wasted work as well.
+            if (!Settings.DesktopCameraEffects.Value && !BenchDesktopEffects) _features.Suspend();
+            return;
+        }
+        int eye = id == _eyeIds[0] ? 0 : id == _eyeIds[1] ? 1 : -1;
+        if (eye < 0) return;
+        LimitEyeShadows();
+        ApplyEyeRenderScale();
+        BoostLod();
+        if (BenchNoShadows) _eyeData[eye].renderShadows = false; // SyncFrom restores it (ForceSync)
+        SuspendEyeFeatures();
+    }
 
-    // Shadow distance is a URP-asset setting shared by all cameras, so it is shortened only while an eye renders.
-    private UniversalRenderPipelineAsset _urp;
+    private void OnEndCamera(int id)
+    {
+        if (id != 0 && id != _strippedId && !IsEye(id)) return;
+        _features.Restore();
+        RestoreShadows();
+        RestoreRenderScale();
+        RestoreLod();
+    }
+
+    // Shadows. Each eye renders its own shadow maps, one pass over the shadow casters per cascade, so a shorter
+    // distance and fewer cascades than the flat game uses save a lot of CPU and GPU time in busy scenes.
     private float _savedShadowDistance = -1f;
+    private int _savedCascades = -1;
+
+    /// <summary>The game's own shadow cascade count (0 = unknown).</summary>
+    public int GameShadowCascades => _savedCascades >= 0 ? _savedCascades : _urp != null ? _urp.shadowCascadeCount : 0;
 
     private void LimitEyeShadows()
     {
-        float d = Settings.EyeShadowDistance.Value;
-        if (d <= 0f) return;
-        _urp ??= UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline?.TryCast<UniversalRenderPipelineAsset>();
-        if (_urp == null || _urp.shadowDistance <= d) return;
-        _savedShadowDistance = _urp.shadowDistance;
-        _urp.shadowDistance = d;
+        if (_urp == null) return;
+        float distance = Settings.EyeShadowDistance.Value;
+        if (distance > 0f && _savedShadowDistance < 0f)
+        {
+            float current = _urp.shadowDistance;
+            if (current > distance)
+            {
+                _savedShadowDistance = current;
+                _urp.shadowDistance = distance;
+            }
+        }
+        int cascades = BenchCascades > 0 ? BenchCascades : Settings.EyeShadowCascades.Value;
+        if (cascades > 0 && _savedCascades < 0)
+        {
+            int current = _urp.shadowCascadeCount;
+            if (current > cascades)
+            {
+                _savedCascades = current;
+                _urp.shadowCascadeCount = cascades;
+            }
+        }
     }
 
     private void RestoreShadows()
     {
-        if (_savedShadowDistance < 0f || _urp == null) return;
-        _urp.shadowDistance = _savedShadowDistance;
+        if (_savedShadowDistance < 0f && _savedCascades < 0) return;
+        if (_urp != null)
+        {
+            if (_savedShadowDistance >= 0f) _urp.shadowDistance = _savedShadowDistance;
+            if (_savedCascades >= 0) _urp.shadowCascadeCount = _savedCascades;
+        }
         _savedShadowDistance = -1f;
+        _savedCascades = -1;
     }
 
     // LOD selection (and LOD culling, i.e. pop-in) depends on an object's size on screen, which depends on the camera's
-    // field of view. The eyes see ~100 degrees vs the game camera's ~40, so objects look several times smaller and would
+    // field of view. The eyes see ~120 degrees vs the game camera's ~40, so objects look several times smaller and would
     // switch to low detail or vanish much closer - at slightly different moments per eye. QualitySettings.lodBias is
     // global, so it is raised only while an eye renders: automatically by tan(eyeFov/2) / tan(gameFov/2).
     private float _savedLodBias = -1f;
@@ -215,9 +279,9 @@ public sealed class VrRig
 
     private void BoostLod()
     {
-        if (BenchNoLodBoost) return;
+        if (_savedLodBias >= 0f || BenchNoLodBoost) return;
         float factor = Settings.EyeLodBias.Value;
-        if (factor <= 0f && _source != null)
+        if (factor <= 0f)
             factor = Mathf.Tan(_eyeFovY * 0.5f * Mathf.Deg2Rad) / Mathf.Tan(Mathf.Max(5f, _camFovY) * 0.5f * Mathf.Deg2Rad);
         factor = Mathf.Clamp(factor, 1f, 8f);
         if (factor <= 1.01f) return;
@@ -235,67 +299,78 @@ public sealed class VrRig
         _savedLodBias = -1f;
     }
 
-    // Adaptive resolution: URP's renderScale is also a pipeline-asset setting, so it too is changed only while an eye
-    // renders. URP then draws the eye smaller and upscales into the (unchanged) eye texture. Upscaling is forced to
-    // bilinear: URP's automatic choice picks nearest-neighbour for exact halves, which looks blocky in a headset.
+    // Adaptive resolution: URP then draws the eye smaller and upscales into the (unchanged) eye texture. Upscaling is
+    // forced to bilinear: URP's automatic choice picks nearest-neighbour for exact halves, which looks blocky in a headset.
     private float _savedRenderScale = -1f;
     private UpscalingFilterSelection _savedUpscaling;
 
     private void ApplyEyeRenderScale()
     {
-        _urp ??= UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline?.TryCast<UniversalRenderPipelineAsset>();
         if (_urp == null) return;
-        float s = Mathf.Clamp(EyeRenderScale, 0.1f, 1f);
-        if (Mathf.Abs(_urp.renderScale - s) < 0.001f) return;
-        _savedRenderScale = _urp.renderScale;
-        _savedUpscaling = _urp.upscalingFilter;
-        _urp.renderScale = s;
-        if (s < 1f) _urp.upscalingFilter = UpscalingFilterSelection.Linear;
+        float scale = Mathf.Clamp(EyeRenderScale, 0.1f, 1f);
+        float current = _urp.renderScale;
+        if (Mathf.Abs(current - scale) < 0.001f) return;
+        if (_savedRenderScale < 0f)
+        {
+            _savedRenderScale = current;
+            _savedUpscaling = _urp.upscalingFilter;
+        }
+        _urp.renderScale = scale;
+        if (scale < 1f) _urp.upscalingFilter = UpscalingFilterSelection.Linear;
     }
 
     private void RestoreRenderScale()
     {
-        if (_savedRenderScale < 0f || _urp == null) return;
-        _urp.renderScale = _savedRenderScale;
-        _urp.upscalingFilter = _savedUpscaling;
+        if (_savedRenderScale < 0f) return;
+        if (_urp != null)
+        {
+            _urp.renderScale = _savedRenderScale;
+            _urp.upscalingFilter = _savedUpscaling;
+        }
         _savedRenderScale = -1f;
     }
 
-    private void OnBeginCamera(Camera cam)
+    // Render effects. Some of the game's full-screen effects may look different per eye (e.g. computed for the game
+    // camera, or screen-space patterns), which is uncomfortable in stereo. Rendering.EyeDisabledFeatures switches
+    // chosen ones off for the eye cameras only; F3 tries them one at a time to find the culprit.
+    private int _diagFeature = -1;      // F3 / benchmark: index of the single feature switched off (-1 = none)
+    private bool[] _eyeOff = Array.Empty<bool>();   // per feature: off for the eyes
+    private bool _anyEyeOff;
+    private string _eyeOffSetting;      // inputs _eyeOff was built from
+    private int _eyeOffDiag = -2, _eyeOffVersion = -1;
+
+    private void SuspendEyeFeatures()
     {
-        int id = cam.GetInstanceID();
-        if (!IsEyeId(id)) return;
-        LimitEyeShadows();
-        ApplyEyeRenderScale();
-        if (_savedLodBias < 0f) BoostLod();
-        if (BenchNoShadows) _eyeData[id == _eyeIds[0] ? 0 : 1].renderShadows = false; // SyncFrom restores it (ForceSync)
-        string raw = Settings.EyeDisabledFeatures.Value ?? "";
-        if (raw != _disabledRaw)
-        {
-            _disabledRaw = raw;
-            _disabled = raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (_disabled.Length > 0) Log.Info($"Eye cameras render without: {string.Join(", ", _disabled)}");
-        }
-        if (_disabled.Length == 0 && _diagFeature < 0) return;
-        var diag = _diagFeature >= 0 && _diagFeature < _eyeFeatures.All.Count ? _eyeFeatures.All[_diagFeature] : null;
-        _eyeFeatures.Suspend(f => f == diag || Array.Exists(_disabled, n => n.Equals(f.name, StringComparison.OrdinalIgnoreCase)));
+        string setting = Settings.EyeDisabledFeatures.Value ?? "";
+        if (setting != _eyeOffSetting || _diagFeature != _eyeOffDiag || RendererFeatures.Version != _eyeOffVersion)
+            BuildEyeFeatureMask(setting);
+        if (_anyEyeOff) _features.Suspend(_eyeOff);
     }
 
-    private void OnEndCamera(Camera cam)
+    private void BuildEyeFeatureMask(string setting)
     {
-        if (cam != null && !IsEyeId(cam.GetInstanceID())) return;
-        _eyeFeatures.Restore();
-        RestoreShadows();
-        RestoreRenderScale();
-        RestoreLod();
+        var names = RendererFeatures.Names;
+        string[] disabled = setting.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (setting != _eyeOffSetting && disabled.Length > 0) Log.Info($"Eye cameras render without: {string.Join(", ", disabled)}");
+        _eyeOffSetting = setting;
+        _eyeOffDiag = _diagFeature;
+        _eyeOffVersion = RendererFeatures.Version;
+        _eyeOff = new bool[names.Count];
+        _anyEyeOff = false;
+        for (int i = 0; i < names.Count; i++)
+        {
+            string name = names[i];
+            _eyeOff[i] = i == _diagFeature || Array.Exists(disabled, d => d.Equals(name, StringComparison.OrdinalIgnoreCase));
+            _anyEyeOff |= _eyeOff[i];
+        }
     }
 
     /// <summary>F3: switch the next single render effect off in the headset (cycles back to none).</summary>
     public string CycleDiagnosticFeature()
     {
-        var all = _eyeFeatures.All;
-        _diagFeature = _diagFeature + 1 >= all.Count ? -1 : _diagFeature + 1;
-        return _diagFeature < 0 ? "all effects on" : $"'{all[_diagFeature].name}' OFF ({_diagFeature + 1}/{all.Count})";
+        var names = RendererFeatures.Names;
+        _diagFeature = _diagFeature + 1 >= names.Count ? -1 : _diagFeature + 1;
+        return _diagFeature < 0 ? "all effects on" : $"'{names[_diagFeature]}' OFF ({_diagFeature + 1}/{names.Count})";
     }
 
     /// <summary>Benchmark: switch exactly one render effect off in the headset (-1 = none).</summary>
@@ -305,9 +380,9 @@ public sealed class VrRig
     public List<(int index, string name)> ActiveFeatures()
     {
         var result = new List<(int, string)>();
-        var all = _eyeFeatures.All;
+        var all = RendererFeatures.All;
         for (int i = 0; i < all.Count; i++)
-            if (all[i] != null && all[i].isActive) result.Add((i, all[i].name));
+            if (all[i] != null && all[i].isActive) result.Add((i, RendererFeatures.Names[i]));
         return result;
     }
 
@@ -327,43 +402,39 @@ public sealed class VrRig
         }
 
         Camera main = wantActive ? Camera.main : null;
-        if (main != null && (!main.isActiveAndEnabled || IsEye(main))) main = null;
+        int id = main == null ? 0 : main.GetInstanceID();
+        if (id != 0 && (IsEye(id) || !main.isActiveAndEnabled)) id = 0;
 
         // DDLV menus each bring their own MainCamera-tagged camera that renders a blurred backdrop.
         // Never follow those; the controller shows the virtual screen instead.
-        bool menu = main != null && IsMenuCamera(main);
+        bool menu = id != 0 && IsMenuCamera(main, id);
         if (menu != MenuOpen)
         {
             MenuOpen = menu;
             Log.Info($"VrRig: menu camera {(menu ? "active -> eyes off" : "gone")}");
         }
-        if (menu) main = null;
+        if (menu) id = 0;
+        if (id == 0) main = null;
 
-        int id = main == null ? 0 : main.GetInstanceID();
         if (id != _sourceId)
         {
             Log.Info($"VrRig: following {(main == null ? "nothing (eyes off)" : Report.PathOf(main.transform))}");
             _source = main;
+            _sourceData = null;       // SyncFrom reads it
             _sourceId = id;
             _nextSync = 0;
         }
-        if (main != null && Time.unscaledTime >= _nextSync)
+        if (id != 0 && Time.unscaledTime >= _nextSync)
         {
             SyncFrom(main);
             _nextSync = Time.unscaledTime + 2f; // the game rarely changes camera settings; 2 s is plenty
         }
 
-        bool active = main != null;
+        bool active = id != 0;
         if (active == Active) return;
         Active = active;
         Eyes[0].enabled = Eyes[1].enabled = active;
         Log.Info($"VrRig: eyes {(active ? "ENABLED" : "disabled")}");
-    }
-
-    private bool IsEye(Camera c)
-    {
-        int id = c.GetInstanceID();
-        return id == Eyes[0].GetInstanceID() || id == Eyes[1].GetInstanceID();
     }
 
     // Menu classification needs a hierarchy path walk, so it is cached per camera instance.
@@ -371,7 +442,7 @@ public sealed class VrRig
     private string _menuMarkersRaw;
     private string[] _menuMarkers = Array.Empty<string>();
 
-    private bool IsMenuCamera(Camera c)
+    private bool IsMenuCamera(Camera c, int id)
     {
         string raw = Settings.MenuCameraMarkers.Value ?? "";
         if (raw != _menuMarkersRaw)
@@ -380,7 +451,6 @@ public sealed class VrRig
             _menuMarkers = raw.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             _menuCache.Clear();
         }
-        int id = c.GetInstanceID();
         if (_menuCache.TryGetValue(id, out bool isMenu)) return isMenu;
         string path = Report.PathOf(c.transform);
         isMenu = Array.Exists(_menuMarkers, m => path.Contains(m, StringComparison.OrdinalIgnoreCase));
@@ -394,7 +464,8 @@ public sealed class VrRig
     {
         // The pipeline asset changes with the game's quality level; pick up the current one.
         _urp = UnityEngine.Rendering.GraphicsSettings.currentRenderPipeline?.TryCast<UniversalRenderPipelineAsset>();
-        var src = main.GetComponent<UniversalAdditionalCameraData>();
+        RendererFeatures.Refresh(_urp);
+        _sourceData = main.GetComponent<UniversalAdditionalCameraData>();
         for (int i = 0; i < 2; i++)
         {
             var e = Eyes[i];
@@ -403,7 +474,7 @@ public sealed class VrRig
 
             // CopyFrom copies everything, including things the eyes must not inherit.
             e.tag = "Untagged"; // never become Camera.main
-            e.name = i == 0 ? "VibelightValley_EyeL" : "VibelightValley_EyeR";
+            e.name = EyeName(i);
             e.stereoTargetEye = StereoTargetEyeMask.None;
             e.targetTexture = Targets[i].Texture;
             e.depth = main.depth - 2 + i;
@@ -411,9 +482,12 @@ public sealed class VrRig
             e.allowMSAA = false;
             e.rect = new Rect(0, 0, 1, 1);
             e.farClipPlane = main.farClipPlane;
-            if (src != null) CopyUrp(src, main.transform, e.GetComponent<UniversalAdditionalCameraData>());
+            if (_sourceData != null) CopyUrp(_sourceData, main.transform, _eyeData[i]);
         }
     }
+
+    // m_RendererIndex is private in URP; the interop assembly exposes it as a property.
+    private static readonly PropertyInfo RendererIndex = typeof(UniversalAdditionalCameraData).GetProperty("m_RendererIndex");
 
     private static void CopyUrp(UniversalAdditionalCameraData s, Transform srcTransform, UniversalAdditionalCameraData d)
     {
@@ -431,8 +505,7 @@ public sealed class VrRig
             d.volumeTrigger = s.volumeTrigger != null ? s.volumeTrigger : srcTransform;
             d.stopNaN = s.stopNaN;
             d.dithering = s.dithering;
-            // m_RendererIndex is private in URP; the interop assembly exposes it as a property.
-            if (s.GetType().GetProperty("m_RendererIndex")?.GetValue(s) is int rendererIndex) d.SetRenderer(rendererIndex);
+            if (RendererIndex?.GetValue(s) is int rendererIndex) d.SetRenderer(rendererIndex);
         }
         catch (Exception ex) { Log.Limited("copyurp", 5, $"Copy URP camera data failed: {ex.Message}", 'E'); }
     }
@@ -473,6 +546,7 @@ public sealed class VrRig
         bool symmetric = Settings.SymmetricEyes.Value;
         if (symmetric)
         {
+            LogFieldOfView(v0.Fov);
             v0.Fov = XrMath.Symmetric(v0.Fov);
             v1.Fov = XrMath.Symmetric(v1.Fov);
         }
@@ -496,6 +570,22 @@ public sealed class VrRig
         }
     }
 
+    // The symmetric frustum is wider than what the headset shows; the part outside is rendered for nothing. Logged
+    // once per field of view, as the number to weigh against what the symmetric frustum fixes (the game's weather).
+    private XrFovf _loggedFov;
+
+    private void LogFieldOfView(in XrFovf fov)
+    {
+        if (fov.AngleLeft == _loggedFov.AngleLeft && fov.AngleRight == _loggedFov.AngleRight
+            && fov.AngleUp == _loggedFov.AngleUp && fov.AngleDown == _loggedFov.AngleDown) return;
+        _loggedFov = fov;
+        XrFovf sym = XrMath.Symmetric(fov);
+        float shown = (Mathf.Tan(fov.AngleRight) - Mathf.Tan(fov.AngleLeft)) * (Mathf.Tan(fov.AngleUp) - Mathf.Tan(fov.AngleDown))
+                      / (4f * Mathf.Tan(sym.AngleRight) * Mathf.Tan(sym.AngleUp));
+        Log.Limited("eyefov", 5, $"Left eye field of view {fov}, rendered as symmetric {sym}: {1f - shown:P0} of each eye image " +
+                                 "lies outside the headset's view", 'I');
+    }
+
     // ------------------------------------------------------------------ comfort filter
     // Riding the game camera 1:1 is nauseating: the right stick swings it up/down on an arc and spins it around the
     // character quickly. So:
@@ -504,8 +594,8 @@ public sealed class VrRig
     //  - turning : eased with time constant TurnSmoothing, orbiting the character so it stays in view.
     // Walking is not delayed: the reference point moves every frame.
     private float _smoothY, _smoothYaw, _lastSmoothYaw;
-    private Vector3 _lastCamPos;
-    private bool _smoothInit;
+    private Vector3 _lastReference;
+    private bool _smoothInit, _lastWasCharacter;
 
     /// <summary>Turn rate of the view in degrees per second (drives the vignette).</summary>
     public float TurnSpeed { get; private set; }
@@ -524,8 +614,8 @@ public sealed class VrRig
         Vector3 reference = character ? feet : cam.position;
 
         // Snap on the first frame, on mode switches and on teleports/cuts instead of drifting for seconds.
-        bool jump = !_smoothInit || character != _lastWasCharacter || (reference - _lastCamPos).sqrMagnitude > 5f * 5f;
-        _lastCamPos = reference;
+        bool jump = !_smoothInit || character != _lastWasCharacter || (reference - _lastReference).sqrMagnitude > 5f * 5f;
+        _lastReference = reference;
         _lastWasCharacter = character;
         _smoothInit = true;
 
@@ -549,8 +639,6 @@ public sealed class VrRig
         pos = pivot - smoothYaw * new Vector3(0f, 0f, d);
         pos.y = _smoothY;
     }
-
-    private bool _lastWasCharacter;
 
     /// <summary>Inverse of the rig mapping: a game-world pose expressed in OpenXR LOCAL space.</summary>
     public XrPosef WorldToLocal(Vector3 worldPos, Quaternion worldRot)
@@ -608,7 +696,7 @@ public sealed class VrRig
         PipelineMonitor.EndCamera -= OnEndCamera;
         PipelineMonitor.BeginContext -= OnBeginContext;
         PipelineMonitor.EndContext -= OnEndContext;
-        _eyeFeatures.Restore();
+        _features.Restore();
         RestoreShadows();
         RestoreRenderScale();
         RestoreLod();

@@ -34,6 +34,19 @@ $legacy = Join-Path $GameDir 'BepInEx\plugins\DDLV-VR'
 if (Test-Path $legacy) { Remove-Item $legacy -Recurse -Force; Write-Host "Removed old $legacy" }
 New-Item -ItemType Directory -Force $dest | Out-Null
 Copy-Item (Join-Path $out 'VibelightValley.dll') $dest -Force
+# The installer's record (install.json) names the release that is installed. This build is not that release any more:
+# mark it as a development build one patch ahead. The mod's log then says so, and the installer shows it instead of
+# "up to date" without offering the older release as an update.
+$record = Join-Path $dest 'install.json'
+if (Test-Path -LiteralPath $record) {
+    $json = [IO.File]::ReadAllText($record)
+    $m = [regex]::Match($json, '"version"\s*:\s*"(\d+)\.(\d+)\.(\d+)"')
+    if ($m.Success) {
+        $dev = '{0}.{1}.{2}-dev' -f $m.Groups[1].Value, $m.Groups[2].Value, ([int]$m.Groups[3].Value + 1)
+        [IO.File]::WriteAllText($record, $json.Remove($m.Index, $m.Length).Insert($m.Index, "`"version`":`"$dev`""))
+        Write-Host "Install record now says development build $dev"
+    }
+}
 $native = Join-Path $root 'lib\native'
 Copy-Item (Join-Path $native 'openxr_loader.dll') $dest -Force
 # Optional debugging layer (Diagnostics.EnableOpenXRValidationLayer)

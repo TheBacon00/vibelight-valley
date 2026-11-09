@@ -11,12 +11,13 @@ namespace VibelightValley.Diagnostics;
 /// <summary>
 /// Startup checks and lightweight ongoing logging that is independent of VR: startup report, API probe,
 /// render-thread round trip, scene / Camera.main changes, a 10 s fps line, and the Diagnostics-mode OpenXR probe.
+/// Everything here runs whether or not a headset is connected, so the per-frame part stays cheap; the big dumps
+/// (every camera, canvas and volume) are written only on request with F9.
 /// </summary>
 public static class RuntimeMonitor
 {
     private static string _lastScene = "";
     private static int _lastMainCamId;
-    private static float _cameraDumpAt = -1;
     private static int _pingFrame = -1;
     private static bool _xrProbeStarted;
     private static int _startFrame;
@@ -55,15 +56,9 @@ public static class RuntimeMonitor
         PingCheck();
         TrackScene();
         InputMonitor.Update();
-        CanvasMonitor.Update();
         FpsStats();
 
         if (DumpKey.Pressed()) FullDump();
-        if (_cameraDumpAt > 0 && Time.realtimeSinceStartup >= _cameraDumpAt)
-        {
-            _cameraDumpAt = -1;
-            Log.Block($"Cameras after scene change ('{_lastScene}')", Report.Cameras(false));
-        }
         if (!_xrProbeStarted && Settings.Mode.Value == VrMode.Diagnostics && Settings.ProbeOpenXR.Value && Time.frameCount - _startFrame > 120)
         {
             _xrProbeStarted = true;
@@ -95,7 +90,6 @@ public static class RuntimeMonitor
         {
             Log.Info($"Active scene: '{_lastScene}' -> '{scene}' ({SceneManager.sceneCount} loaded)");
             _lastScene = scene;
-            _cameraDumpAt = Time.realtimeSinceStartup + 3f;
         }
         var main = Camera.main;
         int id = main == null ? 0 : main.GetInstanceID();
@@ -122,7 +116,7 @@ public static class RuntimeMonitor
     {
         Log.Info("F9: full dump");
         Log.Block("Pipeline", Report.Pipeline());
-        Log.Block("Cameras (incl. inactive)", Report.Cameras(true));
+        Log.Block("Cameras (incl. inactive)", Report.Cameras());
         Log.Block("Canvases", Report.Canvases());
         Log.Block("Volumes", Report.Volumes());
     }

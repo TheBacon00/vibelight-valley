@@ -172,7 +172,12 @@ public sealed class FrameComposer
         if (level <= 0) return;
         EnsureVignetteLevels();
         var tex = _vignetteLevels[Math.Min(level, VignetteLevels) - 1];
-        tex.EnsureValid();
+        if (tex.EnsureValid())
+        {
+            // Unity released the texture (device reset) and the new one is empty: upload all levels again next frame.
+            DestroyVignetteLevels();
+            return;
+        }
         f.Vignette.Texture = tex.Native;
         // Placed in front of the predicted head pose in LOCAL space (the space the HUD/screen layers use), and FARTHER
         // than the HUD: SteamVR draws nearer quads over farther ones regardless of submission order, so a vignette at
@@ -211,6 +216,13 @@ public sealed class FrameComposer
             Graphics.Blit(tex, _vignetteLevels[lvl - 1].Texture);
         }
         Object.Destroy(tex);
+    }
+
+    private void DestroyVignetteLevels()
+    {
+        if (_vignetteLevels == null) return;
+        foreach (var t in _vignetteLevels) t?.Destroy();
+        _vignetteLevels = null;
     }
 
     private static void Blit(Texture src, EyeTarget dst, bool flip)
@@ -290,6 +302,6 @@ public sealed class FrameComposer
         _screenSubmit.Destroy();
         if (_screenCapture != null) { _screenCapture.Release(); Object.Destroy(_screenCapture); }
         if (_uiBlend != null) Object.Destroy(_uiBlend);
-        if (_vignetteLevels != null) foreach (var t in _vignetteLevels) t.Destroy();
+        DestroyVignetteLevels();
     }
 }
